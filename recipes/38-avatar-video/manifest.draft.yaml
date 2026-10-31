@@ -1,0 +1,299 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.content"
+    name: "Nova — Content studio"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Render an avatar video asynchronously; complete it via an authenticated callback or a reconciler; store the file durably; record the cost once."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI", "event"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Avatar-video provider with async generation, status endpoint, catalogues and completion callbacks"
+        - "Public HTTPS endpoint able to receive authenticated callbacks (optional; reconciler-only is supported)"
+        - "Scheduler for the reconciler (every 5 minutes)"
+        - "Private object storage bucket for videos"
+        - "Content database whose video-record function also writes the usage row"
+        - "Owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.content.scripts"
+      name: "Scripts"
+      description: "Read a script and its approval state."
+      intent_examples: ["make an avatar video of the launch script"]
+      input_schema_ref: "schema://nova/avatar-video/request@0.1.0"
+      output_schema_ref: "schema://nova/avatar-video/script@0.1.0"
+      risk_class: "low"
+      preconditions: ["requesting user identified"]
+      postconditions: ["approved script text and hash returned"]
+      tools:
+        - tool_id: "nova.content.scripts.get"
+          name: "Get script"
+          description: "Return script text, status, hash and owner."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/scripts", operation: "get"}
+          input_schema_ref: "schema://nova/avatar-video/request@0.1.0"
+          output_schema_ref: "schema://nova/avatar-video/script@0.1.0"
+          objects:
+            - {object_id: "nova.content.script", name: "Script", description: "Text the avatar will speak", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/avatar-video/script@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/avatar-video/request@0.1.0", output_schema_ref: "schema://nova/avatar-video/script@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:scripts:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found", "not_approved"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["owner equals requester"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.video.catalog"
+      name: "Avatar and voice catalogue"
+      description: "Avatars (stock or the user's own) with supported engines, and provider voices."
+      intent_examples: ["which avatars can I use"]
+      input_schema_ref: "schema://nova/avatar-video/request@0.1.0"
+      output_schema_ref: "schema://nova/avatar-video/avatar@0.1.0"
+      risk_class: "low"
+      preconditions: ["provider ready"]
+      postconditions: ["each avatar carries ownership and engines"]
+      tools:
+        - tool_id: "nova.video.catalog.list_avatars"
+          name: "List avatars"
+          description: "Return avatars with ownership (stock or own), supported engines and default voice."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/video/avatars", operation: "list_avatars"}
+          input_schema_ref: "schema://nova/avatar-video/request@0.1.0"
+          output_schema_ref: "schema://nova/avatar-video/avatar@0.1.0"
+          objects:
+            - {object_id: "nova.video.avatar", name: "Avatar", description: "A presenter avatar", operations: ["read"], scope_rules: ["stock catalogue plus the user's own avatars"], schema_ref: "schema://nova/avatar-video/avatar@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/avatar-video/request@0.1.0", output_schema_ref: "schema://nova/avatar-video/avatar@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["video:catalog:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["provider_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["ownership and engines present for every avatar"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.video.catalog.list_voices"
+          name: "List video voices"
+          description: "Return provider voices with languages."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/video/voices", operation: "list_voices"}
+          input_schema_ref: "schema://nova/avatar-video/request@0.1.0"
+          output_schema_ref: "schema://nova/avatar-video/avatar@0.1.0"
+          objects:
+            - {object_id: "nova.video.voice", name: "Video voice", description: "A provider voice for text-voice renders", operations: ["read"], scope_rules: [], schema_ref: "schema://nova/avatar-video/avatar@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/avatar-video/request@0.1.0", output_schema_ref: "schema://nova/avatar-video/avatar@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["video:catalog:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["provider_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["voice exists"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.video.account"
+      name: "Video provider readiness"
+      description: "Provider readiness with a named reason and credit balance."
+      intent_examples: []
+      input_schema_ref: "schema://nova/avatar-video/request@0.1.0"
+      output_schema_ref: "schema://nova/avatar-video/readiness@0.1.0"
+      risk_class: "low"
+      preconditions: []
+      postconditions: ["ready flag, reason and credits returned"]
+      tools:
+        - tool_id: "nova.video.account.get_readiness"
+          name: "Get readiness"
+          description: "Return ready, reason, credits remaining and reset time."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/video/account", operation: "get_readiness"}
+          input_schema_ref: "schema://nova/avatar-video/request@0.1.0"
+          output_schema_ref: "schema://nova/avatar-video/readiness@0.1.0"
+          objects:
+            - {object_id: "nova.video.account", name: "Provider account", description: "Credit balance and status", operations: ["read"], scope_rules: ["tenant's provider account only"], schema_ref: "schema://nova/avatar-video/readiness@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/avatar-video/request@0.1.0", output_schema_ref: "schema://nova/avatar-video/readiness@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["video:account:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["invalid_credential", "out_of_credits", "provider_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["credits at least the estimate"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.video.render"
+      name: "Avatar video render"
+      description: "Submit an asynchronous render job and read its authoritative status."
+      intent_examples: ["render the video with my avatar"]
+      input_schema_ref: "schema://nova/avatar-video/request@0.1.0"
+      output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+      risk_class: "medium"
+      preconditions: ["script approved", "avatar stock or own", "engine supported", "estimate within cap", "job record claimed"]
+      postconditions: ["exactly one provider job per client_key"]
+      tools:
+        - tool_id: "nova.video.render.submit"
+          name: "Submit render"
+          description: "Start one render job; returns the provider job ID with status pending. No automatic resubmit."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/video/submit", operation: "submit"}
+          input_schema_ref: "schema://nova/avatar-video/request@0.1.0"
+          output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+          objects:
+            - {object_id: "nova.video.render_job", name: "Provider render job", description: "One render at the provider", operations: ["create"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/avatar-video/video-job@0.1.0"}
+          variants:
+            - {variant_id: "text-voice", description: "Provider voice reads the script", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/avatar-video/request@0.1.0", output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0", constraints: ["engine must be in the avatar's supported list", "no silent engine switch"], fallback_variant_id: null}
+            - {variant_id: "audio-driven", description: "Avatar lip-syncs to an existing voiceover from nova.content.voiceover", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/avatar-video/request@0.1.0", output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0", constraints: ["audio record owned by the tenant", "cloned-voice consent covers video_narration"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["video:render:create"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["provider credits committed"], idempotency: "required", timeout_seconds: 30, max_attempts: 1, rate_limits: ["2 jobs in flight per user (TBD)"], error_codes: ["provider_rejected", "unsupported_engine", "out_of_credits", "timeout"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["response contains a provider job ID", "one job per client_key"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.video.render.get_status"
+          name: "Get render status"
+          description: "Authoritative status with pre-signed file URL (expires), thumbnail, duration and failure message."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/video/status", operation: "get_status"}
+          input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+          output_schema_ref: "schema://nova/avatar-video/provider-status@0.1.0"
+          objects:
+            - {object_id: "nova.video.render_job", name: "Provider render job", description: "One render at the provider", operations: ["read"], scope_rules: ["jobs recorded for this tenant only"], schema_ref: "schema://nova/avatar-video/video-job@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0", output_schema_ref: "schema://nova/avatar-video/provider-status@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["video:render:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["not_found", "provider_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status is one of pending, processing, completed, failed"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.video.completion"
+      name: "Render completion"
+      description: "Complete render jobs via an authenticated callback or a scheduled reconciler; both call the same idempotent finalize."
+      intent_examples: []
+      input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+      output_schema_ref: "schema://nova/avatar-video/video-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["job record in processing"]
+      postconditions: ["terminal state written only after an authoritative status read", "durable file for completed jobs"]
+      tools:
+        - tool_id: "nova.video.completion.receive_callback"
+          name: "Receive callback"
+          description: "Authenticate a provider callback (HMAC signature, or per-job token hash compared in constant time), reply 202 and queue finalize; reply 401 on failure. Body is untrusted."
+          invocation: {protocol: "event", binding_ref: "binding://nova/video/callback", operation: "receive_callback"}
+          input_schema_ref: "schema://nova/avatar-video/callback@0.1.0"
+          output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+          objects:
+            - {object_id: "nova.content.video_job", name: "Video job", description: "Job record keyed by provider job ID", operations: ["read"], scope_rules: ["the authenticated job only"], schema_ref: "schema://nova/avatar-video/video-job@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Event-driven; concurrent with the reconciler, not a fallback", compatible_environments: ["requires a public HTTPS endpoint"], input_schema_ref: "schema://nova/avatar-video/callback@0.1.0", output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0", constraints: ["authenticated", "tokens never logged", "re-fetch status before acting"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (service identity)", required_scopes: ["video:render:read", "content:video:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["finalize queued"], idempotency: "required", timeout_seconds: 2, max_attempts: 1, rate_limits: ["endpoint rate-limited (TBD)"], error_codes: ["unauthenticated", "unknown_job"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["forged callbacks rejected with 401", "repeat callbacks are no-ops"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.video.completion.reconcile"
+          name: "Reconcile jobs"
+          description: "Every 5 minutes, finalize up to 50 jobs in processing for more than 2 minutes; isolate per-job errors; fail jobs past maximum age."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/video/reconcile", operation: "reconcile"}
+          input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+          output_schema_ref: "schema://nova/avatar-video/sweep-summary@0.1.0"
+          objects:
+            - {object_id: "nova.content.video_job", name: "Video job", description: "Job record keyed by provider job ID", operations: ["read", "update"], scope_rules: ["jobs in processing only"], schema_ref: "schema://nova/avatar-video/video-job@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Scheduled sweep; concurrent with the callback, not a fallback", compatible_environments: [], input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0", output_schema_ref: "schema://nova/avatar-video/sweep-summary@0.1.0", constraints: ["single-flight", "batch at most 50"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (service identity)", required_scopes: ["video:render:read", "content:video:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["jobs advanced or failed"], idempotency: "required", timeout_seconds: 240, max_attempts: 1, rate_limits: ["every 5 minutes"], error_codes: ["provider_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["sweep outcomes add up to the batch size", "one bad job does not abort the sweep"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.video.completion.finalize"
+          name: "Finalize job"
+          description: "Re-read authoritative status; on completed download promptly, validate, store and advance; on failed record the reason; otherwise leave unchanged."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/video/finalize", operation: "finalize"}
+          input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+          output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+          objects:
+            - {object_id: "nova.content.video_job", name: "Video job", description: "Job record keyed by provider job ID", operations: ["update"], scope_rules: ["forward-only status transitions"], schema_ref: "schema://nova/avatar-video/video-job@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0", output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0", constraints: ["authoritative status read first", "monotonic update"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (service identity)", required_scopes: ["video:render:read", "content:video:write", "content:assets:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["video stored", "job record advanced"], idempotency: "required", timeout_seconds: 300, max_attempts: 3, rate_limits: [], error_codes: ["link_expired", "invalid_file", "storage_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["stored size equals downloaded size", "duration within 2 s of provider value"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.video"
+      name: "Video records and storage"
+      description: "Video job records with their usage rows, and durable video files."
+      intent_examples: ["show my recent videos"]
+      input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+      output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+      risk_class: "low"
+      preconditions: []
+      postconditions: ["one usage row per job plus appended adjustments"]
+      tools:
+        - tool_id: "nova.content.video_records.add"
+          name: "Add video job"
+          description: "Insert the job record in status submitting and its usage row (estimate) in one transaction."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/video-records", operation: "add"}
+          input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+          output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+          objects:
+            - {object_id: "nova.content.video_job", name: "Video job", description: "One render request", operations: ["create"], scope_rules: ["user's tenant only"], schema_ref: "schema://nova/avatar-video/video-job@0.1.0"}
+            - {object_id: "nova.usage.record", name: "Usage row", description: "Estimated cost of one render", operations: ["create"], scope_rules: ["append-only", "written inside this transaction"], schema_ref: "schema://nova/avatar-video/usage-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0", output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0", constraints: ["unique client_key"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:video:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["job record and usage row inserted"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["duplicate_key"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["record and usage row readable"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.video_records.update_status"
+          name: "Update job status"
+          description: "Advance status forward only (submitting, processing, completed or failed), keyed by provider job ID."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/video-records", operation: "update_status"}
+          input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+          output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+          objects:
+            - {object_id: "nova.content.video_job", name: "Video job", description: "One render request", operations: ["update"], scope_rules: ["status, refs, duration, failure_reason, completed_via, token_consumed only"], schema_ref: "schema://nova/avatar-video/video-job@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0", output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0", constraints: ["monotonic"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:video:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["job record updated"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["stale_transition_ignored"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no backwards transition"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.video_records.list_active"
+          name: "List active jobs"
+          description: "Return jobs in processing older than a threshold, oldest first."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/video-records", operation: "list_active"}
+          input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+          output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+          objects:
+            - {object_id: "nova.content.video_job", name: "Video job", description: "One render request", operations: ["read"], scope_rules: ["processing jobs only"], schema_ref: "schema://nova/avatar-video/video-job@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0", output_schema_ref: "schema://nova/avatar-video/video-job@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (service identity)", required_scopes: ["content:video:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: []}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["only processing jobs returned"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.assets.upload"
+          name: "Upload video"
+          description: "Store the video and thumbnail at videos/<provider_job_id>.mp4 in a private bucket."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/assets", operation: "upload"}
+          input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0"
+          output_schema_ref: "schema://nova/avatar-video/video-result@0.1.0"
+          objects:
+            - {object_id: "nova.content.video_asset", name: "Video asset", description: "Stored MP4 and thumbnail", operations: ["create"], scope_rules: ["private video bucket", "no delete"], schema_ref: "schema://nova/avatar-video/video-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/avatar-video/video-job@0.1.0", output_schema_ref: "schema://nova/avatar-video/video-result@0.1.0", constraints: ["fixed path per provider job"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:assets:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["object created in the video bucket"], idempotency: "required", timeout_seconds: 60, max_attempts: 3, rate_limits: [], error_codes: ["storage_unavailable", "too_large"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["stored size equals downloaded size"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/avatar-video/video-result@0.1.0"
+      output_schema_ref: "schema://nova/avatar-video/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the video result (private time-limited link or failure reason) to the requesting user only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/avatar-video/video-result@0.1.0"
+          output_schema_ref: "schema://nova/avatar-video/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/avatar-video/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/avatar-video/video-result@0.1.0", output_schema_ref: "schema://nova/avatar-video/delivery@0.1.0", constraints: ["owner only", "one message per terminal status"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

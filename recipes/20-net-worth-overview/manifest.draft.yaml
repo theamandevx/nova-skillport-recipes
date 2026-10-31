@@ -1,0 +1,135 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.finance"
+    name: "Nova — Finance"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Read-only net-worth overview: live balances from the external personal-finance app via the finance hub, converted to one reporting currency, with stale-data flags."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Authorized read connection to the user's external personal-finance app (token held server-side)"
+        - "Finance-hub account metadata (kinds, credit limits, mapping) and cached balances"
+        - "Exchange-rate snapshots from nova.finance.daily-exchange-rates"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.external_finance_app.accounts"
+      name: "External app accounts"
+      description: "Read live account balances from the user's external personal-finance app over REST."
+      intent_examples: ["show my balances"]
+      input_schema_ref: "schema://nova/net-worth-overview/request@0.1.0"
+      output_schema_ref: "schema://nova/net-worth-overview/external-accounts-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["connection authorized"]
+      postconditions: ["sync-in-progress signal returned"]
+      tools:
+        - tool_id: "nova.external_finance_app.accounts.list"
+          name: "List external accounts"
+          description: "Authenticated GET of accounts with native currency, balance, last-modified time and the provider's sync signal."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/external-finance-app/accounts", operation: "list_accounts"}
+          input_schema_ref: "schema://nova/net-worth-overview/request@0.1.0"
+          output_schema_ref: "schema://nova/net-worth-overview/external-accounts-result@0.1.0"
+          objects:
+            - {object_id: "nova.external_finance_app.account", name: "External account", description: "An account in the user's external app", operations: ["read"], scope_rules: ["user's own external account only", "token server-side only"], schema_ref: "schema://nova/net-worth-overview/external-account@0.1.0"}
+          variants:
+            - {variant_id: "live-rest", description: "Live REST read; default; only variant for this tool", compatible_environments: ["TBD provider API version"], input_schema_ref: "schema://nova/net-worth-overview/request@0.1.0", output_schema_ref: "schema://nova/net-worth-overview/external-accounts-result@0.1.0", constraints: ["read-only", "5-minute response cache"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "external app API token (secret_ref://finance-app-api)", required_scopes: ["external_finance_app:accounts:read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 8, max_attempts: 2, rate_limits: ["provider rate limit TBD", "honour Retry-After up to 10 s"], error_codes: ["unauthorized", "rate_limited", "sync_in_progress", "timeout"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["HTTP 200 and parse", "every account has a currency"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.hub"
+      name: "Finance hub accounts"
+      description: "Account metadata and cached balances."
+      intent_examples: []
+      input_schema_ref: "schema://nova/net-worth-overview/hub-account-query@0.1.0"
+      output_schema_ref: "schema://nova/net-worth-overview/hub-account@0.1.0"
+      risk_class: "medium"
+      preconditions: ["read scope"]
+      postconditions: ["cached balances carry as-of times"]
+      tools:
+        - tool_id: "nova.finance.hub.accounts_list"
+          name: "List hub accounts"
+          description: "Kinds, credit limits, active flag and mapping to external accounts."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/hub-accounts", operation: "accounts_list"}
+          input_schema_ref: "schema://nova/net-worth-overview/hub-account-query@0.1.0"
+          output_schema_ref: "schema://nova/net-worth-overview/hub-account@0.1.0"
+          objects:
+            - {object_id: "nova.finance.account", name: "Hub account", description: "Account metadata in the finance hub", operations: ["read"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/net-worth-overview/hub-account@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/net-worth-overview/hub-account-query@0.1.0", output_schema_ref: "schema://nova/net-worth-overview/hub-account@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:hub:accounts:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["rows belong to the user"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.hub.cached_balances"
+          name: "Cached balances"
+          description: "Last recorded balance per account (seed plus synced records) with as-of time; used only when live balances are unavailable or syncing."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/hub-cached-balances", operation: "cached_balances"}
+          input_schema_ref: "schema://nova/net-worth-overview/hub-account-query@0.1.0"
+          output_schema_ref: "schema://nova/net-worth-overview/cached-balance@0.1.0"
+          objects:
+            - {object_id: "nova.finance.cached_balance", name: "Cached balance", description: "Derived last-recorded balance", operations: ["read"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/net-worth-overview/cached-balance@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Read-only fallback for the live read; output always labelled cached", compatible_environments: [], input_schema_ref: "schema://nova/net-worth-overview/hub-account-query@0.1.0", output_schema_ref: "schema://nova/net-worth-overview/cached-balance@0.1.0", constraints: ["read-only", "never presented as live"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:hub:balances:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["as_of present on every row"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.fx"
+      name: "Exchange rates"
+      description: "Read the latest verified FX snapshot and its status."
+      intent_examples: []
+      input_schema_ref: "schema://nova/daily-exchange-rates/fx-query@0.1.0"
+      output_schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0"
+      risk_class: "low"
+      preconditions: ["snapshots exist"]
+      postconditions: ["status returned"]
+      tools:
+        - tool_id: "nova.finance.fx.get_rates"
+          name: "Get rates"
+          description: "Latest snapshot with fresh/stale/expired/unverified status, source and as-of time."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/fx-get", operation: "get_rates"}
+          input_schema_ref: "schema://nova/daily-exchange-rates/fx-query@0.1.0"
+          output_schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0"
+          objects:
+            - {object_id: "nova.finance.fx_snapshot", name: "FX snapshot", description: "Daily mid-market rates", operations: ["read"], scope_rules: ["reference data"], schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/daily-exchange-rates/fx-query@0.1.0", output_schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:fx:read"], consent_required: false, grant_ref: null, tenant_binding_required: false}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 3, max_attempts: 3, rate_limits: [], error_codes: ["no_snapshot"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status present", "covers needed currencies or flags them"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.networth"
+      name: "Net worth computation"
+      description: "Convert native balances to the reporting currency and aggregate assets, owed and net worth with flags; no writes."
+      intent_examples: ["what's my net worth"]
+      input_schema_ref: "schema://nova/net-worth-overview/request@0.1.0"
+      output_schema_ref: "schema://nova/net-worth-overview/overview@0.1.0"
+      risk_class: "low"
+      preconditions: ["balances and (for totals) a fresh or stale FX snapshot"]
+      postconditions: ["totals verified by a second path or nulled", "every cached value labelled"]
+      tools:
+        - tool_id: "nova.finance.networth.compute"
+          name: "Compute overview"
+          description: "Per-currency subtotals, converted balances, totals (only with allowed FX status), available credit, staleness flags."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/networth-compute", operation: "compute"}
+          input_schema_ref: "schema://nova/net-worth-overview/request@0.1.0"
+          output_schema_ref: "schema://nova/net-worth-overview/overview@0.1.0"
+          objects:
+            - {object_id: "nova.finance.networth_overview", name: "Overview", description: "Net-worth overview returned to the user", operations: ["read"], scope_rules: ["requesting user only", "not stored by default"], schema_ref: "schema://nova/net-worth-overview/overview@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Decimal arithmetic; only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/net-worth-overview/request@0.1.0", output_schema_ref: "schema://nova/net-worth-overview/overview@0.1.0", constraints: ["read-only", "no totals with expired/unverified FX"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:hub:accounts:read", "finance:fx:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 1, rate_limits: [], error_codes: ["verification_mismatch"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["two-path recompute equal to 0.01", "net = assets + owed"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

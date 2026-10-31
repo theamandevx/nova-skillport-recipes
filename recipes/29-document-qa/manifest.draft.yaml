@@ -1,0 +1,193 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.knowledge"
+    name: "Nova — Knowledge and research"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Ingest text documents into a private pgvector library and answer questions with cited passages, or say 'not covered'."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "PostgreSQL with the pgvector extension and an HNSW cosine index"
+        - "A 384-dimension sentence-embedding function, authenticated"
+        - "At least one ready answer model tier (cheap by default)"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.docs.ingest"
+      name: "Document ingestion"
+      description: "Turn a text document into stored, embedded, searchable chunks."
+      intent_examples: ["add this contract to my docs", "save this policy so I can ask about it"]
+      input_schema_ref: "schema://nova/document-qa/request@0.1.0"
+      output_schema_ref: "schema://nova/document-qa/ingest-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["requesting user identified", "text within size cap", "embedding model matches index"]
+      postconditions: ["document ready", "stored chunk count equals produced count"]
+      tools:
+        - tool_id: "nova.docs.ingest.chunk"
+          name: "Chunk text"
+          description: "Deterministically split text into ~900-token windows with 150-token overlap, recording offsets."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/docs/chunk", operation: "chunk"}
+          input_schema_ref: "schema://nova/document-qa/request@0.1.0"
+          output_schema_ref: "schema://nova/document-qa/chunk@0.1.0"
+          objects:
+            - {object_id: "nova.docs.chunk", name: "Chunk", description: "A window of document text with offsets", operations: ["create"], scope_rules: ["in memory until stored"], schema_ref: "schema://nova/document-qa/chunk@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Paragraph-then-sentence boundaries, ~900 tokens, 150 overlap; only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/document-qa/request@0.1.0", output_schema_ref: "schema://nova/document-qa/chunk@0.1.0", constraints: ["deterministic", "100% text coverage"], fallback_variant_id: null}
+          authorization: {required: false, identity_provider: "TBD", required_scopes: [], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 30, max_attempts: 1, rate_limits: [], error_codes: ["coverage_mismatch", "empty_text"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["chunks reproduce the full text", "no chunk exceeds 1000 tokens"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.docs.ingest.store"
+          name: "Store document"
+          description: "Create the document as pending, add chunks with vectors, then finalize it as ready."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/docs/store", operation: "store"}
+          input_schema_ref: "schema://nova/document-qa/chunk@0.1.0"
+          output_schema_ref: "schema://nova/document-qa/ingest-result@0.1.0"
+          objects:
+            - {object_id: "nova.docs.document", name: "Document", description: "A user's ingested text document", operations: ["create", "update"], scope_rules: ["requesting user's tenant only", "update limited to status and chunk_count"], schema_ref: "schema://nova/document-qa/document@0.1.0"}
+            - {object_id: "nova.docs.chunk", name: "Chunk", description: "Stored chunk with a vector(384) embedding", operations: ["create"], scope_rules: ["linked document only"], schema_ref: "schema://nova/document-qa/chunk@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Security-definer dispatcher with row-level security; only the default variant is supported", compatible_environments: ["PostgreSQL with pgvector"], input_schema_ref: "schema://nova/document-qa/chunk@0.1.0", output_schema_ref: "schema://nova/document-qa/ingest-result@0.1.0", constraints: ["pending documents are not searchable"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["docs:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["document and chunks created in the user's library"], idempotency: "required", timeout_seconds: 120, max_attempts: 2, rate_limits: ["1 concurrent ingest per user"], error_codes: ["duplicate", "partial_write", "size_cap_exceeded"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status ready", "stored chunk count equals produced count"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.docs.embed"
+      name: "Sentence embeddings"
+      description: "Compute 384-dimension vectors for chunks and questions."
+      intent_examples: []
+      input_schema_ref: "schema://nova/document-qa/embed-input@0.1.0"
+      output_schema_ref: "schema://nova/document-qa/embed-output@0.1.0"
+      risk_class: "medium"
+      preconditions: ["embedding function ready", "model ID equals the index model ID"]
+      postconditions: ["one 384-dimension vector per input"]
+      tools:
+        - tool_id: "nova.docs.embed.embed"
+          name: "Embed texts"
+          description: "Return one vector per input text from a small open sentence-embedding model."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/docs/embed", operation: "embed"}
+          input_schema_ref: "schema://nova/document-qa/embed-input@0.1.0"
+          output_schema_ref: "schema://nova/document-qa/embed-output@0.1.0"
+          objects:
+            - {object_id: "nova.docs.embedding", name: "Embedding vector", description: "vector(384) attached to a chunk or question", operations: ["create"], scope_rules: ["never returned raw to users"], schema_ref: "schema://nova/document-qa/embed-output@0.1.0"}
+          variants:
+            - {variant_id: "small-384", description: "Small open model, 384 dims, cosine; authenticated edge function; only variant — a model change is a new index version, never a fallback", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/document-qa/embed-input@0.1.0", output_schema_ref: "schema://nova/document-qa/embed-output@0.1.0", constraints: ["same model for chunks and queries"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["embed:invoke"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["text transferred to the embedding function"], idempotency: "not_applicable", timeout_seconds: 60, max_attempts: 3, rate_limits: ["batch size TBD"], error_codes: ["model_mismatch", "provider_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["vector count equals input count", "each vector has 384 dimensions and non-zero norm"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.docs.search"
+      name: "Similarity search"
+      description: "Return the most similar chunks from the user's own documents."
+      intent_examples: ["what does my lease say about pets"]
+      input_schema_ref: "schema://nova/document-qa/search-input@0.1.0"
+      output_schema_ref: "schema://nova/document-qa/search-hit@0.1.0"
+      risk_class: "low"
+      preconditions: ["query vector from the index's model"]
+      postconditions: ["every hit in the requesting tenant and scope"]
+      tools:
+        - tool_id: "nova.docs.search.query"
+          name: "Search chunks"
+          description: "Top-k chunks by cosine similarity (default k = 6) within the document scope."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/docs/search", operation: "search"}
+          input_schema_ref: "schema://nova/document-qa/search-input@0.1.0"
+          output_schema_ref: "schema://nova/document-qa/search-hit@0.1.0"
+          objects:
+            - {object_id: "nova.docs.chunk", name: "Chunk", description: "Stored chunk", operations: ["read"], scope_rules: ["requesting user's tenant only", "ready documents only"], schema_ref: "schema://nova/document-qa/chunk@0.1.0"}
+          variants:
+            - {variant_id: "hnsw-cosine", description: "pgvector HNSW index, cosine; similarity = 1 - distance; only variant", compatible_environments: ["PostgreSQL with pgvector"], input_schema_ref: "schema://nova/document-qa/search-input@0.1.0", output_schema_ref: "schema://nova/document-qa/search-hit@0.1.0", constraints: ["read-only", "k between 1 and 10"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["docs:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["scope_violation", "index_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["hits sorted by similarity", "all hits within tenant and scope"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.docs.answer"
+      name: "Cited answer"
+      description: "Write an answer only from passages above the similarity threshold, then check every citation."
+      intent_examples: ["what are the payment terms in the Example Corp agreement"]
+      input_schema_ref: "schema://nova/document-qa/answer-input@0.1.0"
+      output_schema_ref: "schema://nova/document-qa/answer-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["at least one passage at or above min_similarity (default 0.30)"]
+      postconditions: ["every sentence cited and supported, or listed as unsupported"]
+      tools:
+        - tool_id: "nova.docs.answer.synthesise"
+          name: "Synthesise answer"
+          description: "LLM answer from numbered passages only; passage text treated as data."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/docs/answer", operation: "synthesise"}
+          input_schema_ref: "schema://nova/document-qa/answer-input@0.1.0"
+          output_schema_ref: "schema://nova/document-qa/answer-result@0.1.0"
+          objects:
+            - {object_id: "nova.docs.answer", name: "Answer", description: "Cited answer in the run record", operations: ["create"], scope_rules: ["run record only"], schema_ref: "schema://nova/document-qa/answer-result@0.1.0"}
+          variants:
+            - {variant_id: "cheap", description: "Default low-cost general model", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/document-qa/answer-input@0.1.0", output_schema_ref: "schema://nova/document-qa/answer-result@0.1.0", constraints: ["no automatic tier switch"], fallback_variant_id: null}
+            - {variant_id: "medium", description: "Explicit user or operator choice; higher cost", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/document-qa/answer-input@0.1.0", output_schema_ref: "schema://nova/document-qa/answer-result@0.1.0", constraints: ["explicit selection only"], fallback_variant_id: null}
+            - {variant_id: "pro", description: "Explicit choice only; reasoning-capable; needs output-token headroom; empty completion = failure", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/document-qa/answer-input@0.1.0", output_schema_ref: "schema://nova/document-qa/answer-result@0.1.0", constraints: ["explicit selection only", "cost approval if operator requires"], fallback_variant_id: null}
+          # Only the selected variant's scope is required at call time (cheap -> llm:invoke:cheap, and so on).
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["llm:invoke:cheap", "llm:invoke:medium", "llm:invoke:pro"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["question and kept passages transferred to the LLM provider"], idempotency: "not_applicable", timeout_seconds: 30, max_attempts: 2, rate_limits: ["token cap per question TBD"], error_codes: ["tier_unavailable", "empty_completion"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["answer contains [n] citations"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.docs.answer.verify"
+          name: "Verify citations"
+          description: "Check citation range, verbatim quotes and that numbers, dates and names occur in the cited passage."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/docs/verify", operation: "verify"}
+          input_schema_ref: "schema://nova/document-qa/answer-result@0.1.0"
+          output_schema_ref: "schema://nova/document-qa/verify-report@0.1.0"
+          objects:
+            - {object_id: "nova.docs.answer", name: "Answer", description: "Cited answer in the run record", operations: ["read"], scope_rules: ["run record only"], schema_ref: "schema://nova/document-qa/answer-result@0.1.0"}
+          variants:
+            - {variant_id: "rules", description: "Default deterministic checks", compatible_environments: [], input_schema_ref: "schema://nova/document-qa/answer-result@0.1.0", output_schema_ref: "schema://nova/document-qa/verify-report@0.1.0", constraints: [], fallback_variant_id: null}
+            - {variant_id: "llm-check", description: "Optional second pass on a different model from the writer, cheap tier; can only downgrade", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/document-qa/answer-result@0.1.0", output_schema_ref: "schema://nova/document-qa/verify-report@0.1.0", constraints: ["operator-enabled only", "model differs from writer"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["docs:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 1, rate_limits: [], error_codes: ["unsupported_sentence", "citation_out_of_range"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["100% of sentences supported or listed as unsupported"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.docs.library"
+      name: "Document library"
+      description: "List and remove the user's documents."
+      intent_examples: ["which documents do I have", "delete the old lease"]
+      input_schema_ref: "schema://nova/document-qa/library-query@0.1.0"
+      output_schema_ref: "schema://nova/document-qa/document@0.1.0"
+      risk_class: "high"
+      preconditions: ["requesting user identified"]
+      postconditions: ["deleted documents absent from list and search"]
+      tools:
+        - tool_id: "nova.docs.library.list"
+          name: "List documents"
+          description: "Return the user's documents with title, status and chunk count."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/docs/list", operation: "list"}
+          input_schema_ref: "schema://nova/document-qa/library-query@0.1.0"
+          output_schema_ref: "schema://nova/document-qa/document@0.1.0"
+          objects:
+            - {object_id: "nova.docs.document", name: "Document", description: "A user's ingested document", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/document-qa/document@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/document-qa/library-query@0.1.0", output_schema_ref: "schema://nova/document-qa/document@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["docs:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: []}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["only own-tenant documents returned"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.docs.library.delete"
+          name: "Delete document"
+          description: "Remove one document and all its chunks after explicit approval."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/docs/delete", operation: "delete"}
+          input_schema_ref: "schema://nova/document-qa/library-query@0.1.0"
+          output_schema_ref: "schema://nova/document-qa/document@0.1.0"
+          objects:
+            - {object_id: "nova.docs.document", name: "Document", description: "A user's ingested document", operations: ["delete"], scope_rules: ["requesting user's tenant only", "one named document per approval"], schema_ref: "schema://nova/document-qa/document@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/document-qa/library-query@0.1.0", output_schema_ref: "schema://nova/document-qa/document@0.1.0", constraints: ["approval required"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["docs:delete"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["document and chunks permanently removed"], idempotency: "required", timeout_seconds: 30, max_attempts: 2, rate_limits: [], error_codes: ["not_found", "approval_missing"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["document absent from list and search"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

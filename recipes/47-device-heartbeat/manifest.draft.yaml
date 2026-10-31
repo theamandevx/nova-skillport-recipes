@@ -1,0 +1,164 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.ops"
+    name: "Nova — Operations"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Watch the user's own devices on a private device network and alert the owner once per ok/late transition."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Private device network exposing per-device status read-only (mesh VPN client status command or read-only control-plane key)"
+        - "Durable state store (file with atomic rename, or database row with version check)"
+        - "Owner notification channel"
+        - "Optional jobs/health board"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.devices.status"
+      name: "Device network status"
+      description: "Read each device's online flag and last-seen time without changing anything."
+      intent_examples: ["is my home server online", "check my devices"]
+      input_schema_ref: "schema://nova/device-heartbeat/status-query@0.1.0"
+      output_schema_ref: "schema://nova/device-heartbeat/status-list@0.1.0"
+      risk_class: "low"
+      preconditions: ["device network client logged in, or read-only key configured"]
+      postconditions: ["normalised list contains no address, key or account field"]
+      tools:
+        - tool_id: "nova.devices.status.list"
+          name: "List device status"
+          description: "Return device ID, display name, online flag, last-seen time and tags."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/devices/status-local", operation: "list"}
+          input_schema_ref: "schema://nova/device-heartbeat/status-query@0.1.0"
+          output_schema_ref: "schema://nova/device-heartbeat/status-list@0.1.0"
+          objects:
+            - {object_id: "nova.devices.device_status", name: "Device status record", description: "One device's online state on the user's own network", operations: ["read"], scope_rules: ["user's own device network only", "addresses, keys and account fields discarded at the boundary"], schema_ref: "schema://nova/device-heartbeat/device-status@0.1.0"}
+          variants:
+            - {variant_id: "local-cli", description: "Mesh VPN client's local machine-readable status command; no API credential; selected by default", compatible_environments: ["host with the client installed and logged in"], input_schema_ref: "schema://nova/device-heartbeat/status-query@0.1.0", output_schema_ref: "schema://nova/device-heartbeat/status-list@0.1.0", constraints: ["read-only"], fallback_variant_id: "control-api"}
+            - {variant_id: "control-api", description: "Mesh VPN control-plane REST API with a device-read-only key; eligible only when configured", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/device-heartbeat/status-query@0.1.0", output_schema_ref: "schema://nova/device-heartbeat/status-list@0.1.0", constraints: ["read-only", "key must carry no write scope", "at most 1 call per run"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["devices:status:read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: ["1 control-plane call per run"], error_codes: ["source_unavailable", "permission_denied", "unparseable_response"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["response parses", "no mutating call in binding log", "every record validates with additionalProperties false"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.devices.heartbeat"
+      name: "Heartbeat evaluation"
+      description: "Classify devices as ok, late or unknown and emit ok-to-late and late-to-ok transitions only."
+      intent_examples: []
+      input_schema_ref: "schema://nova/device-heartbeat/status-list@0.1.0"
+      output_schema_ref: "schema://nova/device-heartbeat/heartbeat-run@0.1.0"
+      risk_class: "low"
+      preconditions: ["valid status list", "previous state loaded or first run declared"]
+      postconditions: ["no transition on first run or first observation", "no transition involves unknown"]
+      tools:
+        - tool_id: "nova.devices.heartbeat.evaluate"
+          name: "Evaluate heartbeat"
+          description: "Pure function: status list + previous state + threshold -> candidate state + transitions with idempotency keys."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/devices/heartbeat-evaluate", operation: "evaluate"}
+          input_schema_ref: "schema://nova/device-heartbeat/status-list@0.1.0"
+          output_schema_ref: "schema://nova/device-heartbeat/heartbeat-state@0.1.0"
+          objects:
+            - {object_id: "nova.devices.transition", name: "Transition", description: "An ok-to-late or late-to-ok change for one device", operations: ["create"], scope_rules: ["inside the tenant's heartbeat state only"], schema_ref: "schema://nova/device-heartbeat/transition@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/device-heartbeat/status-list@0.1.0", output_schema_ref: "schema://nova/device-heartbeat/heartbeat-state@0.1.0", constraints: ["deterministic", "no side effects"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["heartbeat:state:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 2, max_attempts: 1, rate_limits: [], error_codes: ["invariant_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["transition.from equals stored state", "zero transitions when first_run is true", "independent recomputation matches"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.devices.heartbeat_state"
+      name: "Heartbeat state store"
+      description: "Keep per-device state and pending alerts between runs with atomic, versioned writes."
+      intent_examples: []
+      input_schema_ref: "schema://nova/device-heartbeat/state-key@0.1.0"
+      output_schema_ref: "schema://nova/device-heartbeat/heartbeat-state@0.1.0"
+      risk_class: "low"
+      preconditions: ["store configured at enablement"]
+      postconditions: ["version incremented by exactly 1 per write"]
+      tools:
+        - tool_id: "nova.devices.heartbeat_state.get"
+          name: "Get heartbeat state"
+          description: "Load the previous state and its version, or report that none exists."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/devices/state-file", operation: "get"}
+          input_schema_ref: "schema://nova/device-heartbeat/state-key@0.1.0"
+          output_schema_ref: "schema://nova/device-heartbeat/heartbeat-state@0.1.0"
+          objects:
+            - {object_id: "nova.devices.heartbeat_state", name: "Heartbeat state", description: "Per-device state, pending alerts and source-failure counter", operations: ["read"], scope_rules: ["requesting tenant only"], schema_ref: "schema://nova/device-heartbeat/heartbeat-state@0.1.0"}
+          variants:
+            - {variant_id: "file", description: "JSON file, mode 0600, in a service-owned directory", compatible_environments: ["single host"], input_schema_ref: "schema://nova/device-heartbeat/state-key@0.1.0", output_schema_ref: "schema://nova/device-heartbeat/heartbeat-state@0.1.0", constraints: ["no fallback between stores"], fallback_variant_id: null}
+            - {variant_id: "database", description: "One row per tenant read through a security-definer function (binding://nova/devices/state-db)", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/device-heartbeat/state-key@0.1.0", output_schema_ref: "schema://nova/device-heartbeat/heartbeat-state@0.1.0", constraints: ["no fallback between stores"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["heartbeat:state:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 2, rate_limits: [], error_codes: ["store_unreadable", "state_corrupt"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["state validates or first_run declared"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.devices.heartbeat_state.put"
+          name: "Put heartbeat state"
+          description: "Write the new state atomically if the stored version still equals the version read."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/devices/state-file", operation: "put"}
+          input_schema_ref: "schema://nova/device-heartbeat/heartbeat-state@0.1.0"
+          output_schema_ref: "schema://nova/device-heartbeat/heartbeat-state@0.1.0"
+          objects:
+            - {object_id: "nova.devices.heartbeat_state", name: "Heartbeat state", description: "Per-device state, pending alerts and source-failure counter", operations: ["create", "update"], scope_rules: ["requesting tenant only", "create only when no state exists", "compare-and-swap on version"], schema_ref: "schema://nova/device-heartbeat/heartbeat-state@0.1.0"}
+          variants:
+            - {variant_id: "file", description: "Temp file, fsync, atomic rename, mode 0600, under the run lock", compatible_environments: ["single host"], input_schema_ref: "schema://nova/device-heartbeat/heartbeat-state@0.1.0", output_schema_ref: "schema://nova/device-heartbeat/heartbeat-state@0.1.0", constraints: ["no fallback between stores"], fallback_variant_id: null}
+            - {variant_id: "database", description: "Optimistic version check inside a security-definer function (binding://nova/devices/state-db)", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/device-heartbeat/heartbeat-state@0.1.0", output_schema_ref: "schema://nova/device-heartbeat/heartbeat-state@0.1.0", constraints: ["no fallback between stores"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["heartbeat:state:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["heartbeat state updated"], idempotency: "required", timeout_seconds: 5, max_attempts: 2, rate_limits: ["1 concurrent run per tenant"], error_codes: ["version_conflict", "write_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read-back version equals previous plus 1", "pending alert keys present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.jobs.registry"
+      name: "Jobs and health board"
+      description: "Show device health next to other recurring jobs; stale reports render unknown, never green."
+      intent_examples: ["is everything running"]
+      input_schema_ref: "schema://nova/device-heartbeat/job-report@0.1.0"
+      output_schema_ref: "schema://nova/device-heartbeat/job-report@0.1.0"
+      risk_class: "low"
+      preconditions: ["board configured (optional dependency)"]
+      postconditions: ["rows carry the run time"]
+      tools:
+        - tool_id: "nova.jobs.registry.report"
+          name: "Report device rows"
+          description: "Upsert this recipe's device:<id> rows in lane device."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/jobs/report", operation: "report"}
+          input_schema_ref: "schema://nova/device-heartbeat/job-report@0.1.0"
+          output_schema_ref: "schema://nova/device-heartbeat/job-report@0.1.0"
+          objects:
+            - {object_id: "nova.jobs.job_row", name: "Job row", description: "One device's row on the jobs board", operations: ["create", "update"], scope_rules: ["rows owned by this recipe only", "retired devices set to disabled, never deleted"], schema_ref: "schema://nova/device-heartbeat/job-report@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/device-heartbeat/job-report@0.1.0", output_schema_ref: "schema://nova/device-heartbeat/job-report@0.1.0", constraints: ["upsert by job_key"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["jobs:report"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["board rows updated"], idempotency: "required", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["board_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["reported_at equals run time", "row older than 4 intervals renders unknown"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/device-heartbeat/alert@0.1.0"
+      output_schema_ref: "schema://nova/device-heartbeat/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt per idempotency key"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send one transition or source notice to the owner only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/device-heartbeat/alert@0.1.0"
+          output_schema_ref: "schema://nova/device-heartbeat/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/device-heartbeat/alert@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/device-heartbeat/alert@0.1.0", output_schema_ref: "schema://nova/device-heartbeat/delivery@0.1.0", constraints: ["owner only", "a sent key is never resent"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the owner"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received", "key cleared in state"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

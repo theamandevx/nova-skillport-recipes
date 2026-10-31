@@ -1,0 +1,233 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+# Where a variant uses a different binding from its tool, it carries its own binding_ref (Standard §2.3 callable-object contract).
+manifest:
+  package:
+    app_id: "nova.knowledge"
+    name: "Nova — Knowledge and research"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Periodic per-competitor news summaries in which every sentence cites a source fetched in the same run; saved to the research library."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Owner-approved recurring job (schedule in the owner's time zone)"
+        - "Self-hosted SearXNG metasearch reachable"
+        - "A ready mid-tier model (cheap/pro optional); an optional declared fallback on a different provider"
+        - "Research-report store; owner notification channel if digests are on"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.research.search"
+      name: "Web news search"
+      description: "Find recent public news pages for a query and time range."
+      intent_examples: ["what's new with Acme Widgets this week"]
+      input_schema_ref: "schema://nova/competitor-news-monitor/watchlist@0.1.0"
+      output_schema_ref: "schema://nova/competitor-news-monitor/search-result@0.1.0"
+      risk_class: "low"
+      preconditions: ["metasearch reachable"]
+      postconditions: ["results carry absolute URLs"]
+      tools:
+        - tool_id: "nova.research.search.query"
+          name: "Search news"
+          description: "Query SearXNG in news mode with a time range."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/research/search", operation: "query"}
+          input_schema_ref: "schema://nova/competitor-news-monitor/watchlist@0.1.0"
+          output_schema_ref: "schema://nova/competitor-news-monitor/search-result@0.1.0"
+          objects:
+            - {object_id: "nova.research.search_result", name: "Search result", description: "Title, URL, snippet and date of a public page", operations: ["read"], scope_rules: ["transient"], schema_ref: "schema://nova/competitor-news-monitor/search-result@0.1.0"}
+          variants:
+            - {variant_id: "metasearch-news", description: "Self-hosted SearXNG, news mode; only variant — a keyed API would be a new reviewed variant", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/competitor-news-monitor/watchlist@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/search-result@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["web:search"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["query terms forwarded to upstream search engines"], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 3, rate_limits: ["one run per owner at a time"], error_codes: ["metasearch_unavailable", "rate_limited"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["absolute URLs", "dates within window where present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.research.fetch"
+      name: "Page fetch"
+      description: "Read a public web page as plain text."
+      intent_examples: []
+      input_schema_ref: "schema://nova/competitor-news-monitor/fetch-input@0.1.0"
+      output_schema_ref: "schema://nova/competitor-news-monitor/source@0.1.0"
+      risk_class: "low"
+      preconditions: ["URL public and not deny-listed"]
+      postconditions: ["final URL, status, text, fetched_at and content hash returned"]
+      tools:
+        - tool_id: "nova.research.fetch.get"
+          name: "Fetch page"
+          description: "HTTP GET, 2 MB cap, HTML stripped to text, no script execution, no logins, robots rules respected."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/research/fetch", operation: "get"}
+          input_schema_ref: "schema://nova/competitor-news-monitor/fetch-input@0.1.0"
+          output_schema_ref: "schema://nova/competitor-news-monitor/source@0.1.0"
+          objects:
+            - {object_id: "nova.research.source", name: "Fetched source", description: "Public page text (transient) and metadata", operations: ["read"], scope_rules: ["public pages only", "text not stored beyond a 300-character excerpt"], schema_ref: "schema://nova/competitor-news-monitor/source@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/competitor-news-monitor/fetch-input@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/source@0.1.0", constraints: ["no login or paywall circumvention", "max 3 concurrent fetches"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["web:fetch:public"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["HTTP request to the source site"], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: ["per-site politeness delay TBD"], error_codes: ["login_wall", "paywall", "too_little_text", "http_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status 200", "text at least 500 characters", "competitor named in text"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.research.brief"
+      name: "Cited findings"
+      description: "Extract quoted facts and write a per-competitor summary from them only."
+      intent_examples: []
+      input_schema_ref: "schema://nova/competitor-news-monitor/source@0.1.0"
+      output_schema_ref: "schema://nova/competitor-news-monitor/monitor-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["at least one readable source", "selected tier ready"]
+      postconditions: ["every fact carries a verbatim quote and source number"]
+      tools:
+        - tool_id: "nova.research.brief.extract"
+          name: "Extract facts"
+          description: "Extract dated facts, each with source number and verbatim quote; source text treated as data."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/research/extract", operation: "extract"}
+          input_schema_ref: "schema://nova/competitor-news-monitor/source@0.1.0"
+          output_schema_ref: "schema://nova/competitor-news-monitor/fact@0.1.0"
+          objects:
+            - {object_id: "nova.research.fact", name: "Extracted fact", description: "Statement with a verbatim quote", operations: ["create"], scope_rules: ["run only"], schema_ref: "schema://nova/competitor-news-monitor/fact@0.1.0"}
+          variants:
+            - {variant_id: "medium", description: "Default mid-tier model", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/competitor-news-monitor/source@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/fact@0.1.0", constraints: [], fallback_variant_id: "medium-alt"}
+            - {variant_id: "cheap", description: "Explicit operator choice; lower recall; tier shown in digest", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/competitor-news-monitor/source@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/fact@0.1.0", constraints: ["explicit selection only"], fallback_variant_id: null}
+            - {variant_id: "pro", description: "Explicit choice; reasoning-capable; output-token headroom; empty completion = failure", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/competitor-news-monitor/source@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/fact@0.1.0", constraints: ["explicit selection only"], fallback_variant_id: null}
+            - {variant_id: "medium-alt", binding_ref: "binding://nova/research/extract-alt", description: "Optional declared fallback: mid-tier model on a different provider; eligible only if declared and approved at installation; use disclosed", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/competitor-news-monitor/source@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/fact@0.1.0", constraints: ["declared at installation", "same data-handling policy", "fallback_used disclosed"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["llm:invoke:medium"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["source text sent to the model provider"], idempotency: "not_applicable", timeout_seconds: 45, max_attempts: 2, rate_limits: ["per-run token cap TBD"], error_codes: ["tier_unavailable", "empty_completion", "non_verbatim_quote"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every quote occurs verbatim in its source"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.research.brief.synthesise"
+          name: "Write summary"
+          description: "At most 6 neutral sentences from verified facts, each citing [n]."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/research/synthesise", operation: "synthesise"}
+          input_schema_ref: "schema://nova/competitor-news-monitor/fact@0.1.0"
+          output_schema_ref: "schema://nova/competitor-news-monitor/monitor-result@0.1.0"
+          objects:
+            - {object_id: "nova.research.report", name: "Research report", description: "Summary draft for one competitor", operations: ["create"], scope_rules: ["run only until S7 passes"], schema_ref: "schema://nova/competitor-news-monitor/report@0.1.0"}
+          variants:
+            - {variant_id: "medium", description: "Default; same model as extraction", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/competitor-news-monitor/fact@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/monitor-result@0.1.0", constraints: [], fallback_variant_id: "medium-alt"}
+            - {variant_id: "cheap", description: "Explicit operator choice only", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/competitor-news-monitor/fact@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/monitor-result@0.1.0", constraints: ["explicit selection only"], fallback_variant_id: null}
+            - {variant_id: "pro", description: "Explicit choice only; output-token headroom", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/competitor-news-monitor/fact@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/monitor-result@0.1.0", constraints: ["explicit selection only"], fallback_variant_id: null}
+            - {variant_id: "medium-alt", binding_ref: "binding://nova/research/synthesise-alt", description: "Optional declared fallback on a different provider; disclosed", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/competitor-news-monitor/fact@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/monitor-result@0.1.0", constraints: ["declared at installation", "fallback_used disclosed"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["llm:invoke:medium"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["facts sent to the model provider"], idempotency: "not_applicable", timeout_seconds: 30, max_attempts: 2, rate_limits: ["per-run token cap TBD"], error_codes: ["tier_unavailable", "empty_completion"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every sentence cites at least one source"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.research.grounding"
+      name: "Grounding verifier"
+      description: "Check every claim traces to a source fetched in this run."
+      intent_examples: []
+      input_schema_ref: "schema://nova/competitor-news-monitor/monitor-result@0.1.0"
+      output_schema_ref: "schema://nova/competitor-news-monitor/verify-report@0.1.0"
+      risk_class: "low"
+      preconditions: ["sentences and fetched sources available"]
+      postconditions: ["failing sentences listed or removed"]
+      tools:
+        - tool_id: "nova.research.grounding.verify"
+          name: "Verify grounding"
+          description: "Citation provenance, verbatim quotes, and numbers, dates, prices and names present in cited sources."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/research/verify", operation: "verify"}
+          input_schema_ref: "schema://nova/competitor-news-monitor/monitor-result@0.1.0"
+          output_schema_ref: "schema://nova/competitor-news-monitor/verify-report@0.1.0"
+          objects:
+            - {object_id: "nova.research.report", name: "Research report", description: "Summary draft for one competitor", operations: ["read"], scope_rules: ["run only"], schema_ref: "schema://nova/competitor-news-monitor/report@0.1.0"}
+          variants:
+            - {variant_id: "rules", description: "Default deterministic checks", compatible_environments: [], input_schema_ref: "schema://nova/competitor-news-monitor/monitor-result@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/verify-report@0.1.0", constraints: [], fallback_variant_id: null}
+            - {variant_id: "llm-check", description: "Optional second pass on a model different from the writer; can only remove claims", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/competitor-news-monitor/monitor-result@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/verify-report@0.1.0", constraints: ["operator-enabled only", "model differs from writer"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["research:reports:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 1, rate_limits: [], error_codes: ["unfetched_citation", "ungrounded_specific", "opinion_detected"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["100% of saved sentences pass"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.research.reports"
+      name: "Research library"
+      description: "Keep research reports in the owner's library."
+      intent_examples: ["show last week's competitor report"]
+      input_schema_ref: "schema://nova/competitor-news-monitor/report@0.1.0"
+      output_schema_ref: "schema://nova/competitor-news-monitor/report@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner's tenant exists"]
+      postconditions: ["one report per competitor per window"]
+      tools:
+        - tool_id: "nova.research.reports.save"
+          name: "Save report"
+          description: "Save one report with summary, findings, source metadata and excerpts."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/research/reports-save", operation: "save"}
+          input_schema_ref: "schema://nova/competitor-news-monitor/report@0.1.0"
+          output_schema_ref: "schema://nova/competitor-news-monitor/report@0.1.0"
+          objects:
+            - {object_id: "nova.research.report", name: "Research report", description: "Saved competitor report", operations: ["create"], scope_rules: ["owner's tenant only", "no updates — new window = new report"], schema_ref: "schema://nova/competitor-news-monitor/report@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/competitor-news-monitor/report@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/report@0.1.0", constraints: ["only after grounding passes"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["research:reports:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["report row created"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["duplicate", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read back by key with matching source count"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.research.reports.list"
+          name: "List reports"
+          description: "List previous reports and their source URLs for de-duplication."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/research/reports-list", operation: "list"}
+          input_schema_ref: "schema://nova/competitor-news-monitor/report-query@0.1.0"
+          output_schema_ref: "schema://nova/competitor-news-monitor/report@0.1.0"
+          objects:
+            - {object_id: "nova.research.report", name: "Research report", description: "Saved report", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/competitor-news-monitor/report@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/competitor-news-monitor/report-query@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/report@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["research:reports:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["only own-tenant reports returned"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the owner's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/competitor-news-monitor/digest@0.1.0"
+      output_schema_ref: "schema://nova/competitor-news-monitor/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured", "inside quiet-hour window"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the digest to the owner only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/competitor-news-monitor/digest@0.1.0"
+          output_schema_ref: "schema://nova/competitor-news-monitor/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the owner", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/competitor-news-monitor/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/competitor-news-monitor/digest@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: ["one digest per run"], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt", "digest text is a subset of verified sentences"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.ops.jobs"
+      name: "Job run registry"
+      description: "Record scheduled-run outcomes so failures and missed runs are visible."
+      intent_examples: []
+      input_schema_ref: "schema://nova/competitor-news-monitor/run-record@0.1.0"
+      output_schema_ref: "schema://nova/competitor-news-monitor/run-record@0.1.0"
+      risk_class: "low"
+      preconditions: []
+      postconditions: ["stale is never reported as healthy"]
+      tools:
+        - tool_id: "nova.ops.jobs.heartbeat"
+          name: "Record run"
+          description: "Write one run's status, counts, model used and errors."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/ops/jobs-heartbeat", operation: "heartbeat"}
+          input_schema_ref: "schema://nova/competitor-news-monitor/run-record@0.1.0"
+          output_schema_ref: "schema://nova/competitor-news-monitor/run-record@0.1.0"
+          objects:
+            - {object_id: "nova.ops.run_record", name: "Run record", description: "Outcome of one scheduled run", operations: ["create"], scope_rules: ["owner's jobs only"], schema_ref: "schema://nova/competitor-news-monitor/run-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/competitor-news-monitor/run-record@0.1.0", output_schema_ref: "schema://nova/competitor-news-monitor/run-record@0.1.0", constraints: ["written on every path"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["jobs:heartbeat"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["run record created"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["registry_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["record readable by run_id"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

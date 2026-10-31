@@ -1,0 +1,280 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.content"
+    name: "Nova — Content"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Draft LinkedIn posts in the user's voice into an approval queue; publish per post, after approval, through the user's own LinkedIn app (currently blocked)."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Voice profile (style guide; 0-5 example posts)"
+        - "A ready pro-tier model (medium optional)"
+        - "Content approval queue in the user's tenant"
+        - "For publishing only: the user's LinkedIn app with member-posting access and an active OAuth grant (BLOCKED until approved)"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.content.voice"
+      name: "Voice profile"
+      description: "Hold the user's writing voice."
+      intent_examples: []
+      input_schema_ref: "schema://nova/linkedin-post-in-your-voice/voice-query@0.1.0"
+      output_schema_ref: "schema://nova/linkedin-post-in-your-voice/voice-profile@0.1.0"
+      risk_class: "low"
+      preconditions: ["requesting user identified"]
+      postconditions: ["guide returned; voice_tuned false when no examples"]
+      tools:
+        - tool_id: "nova.content.voice.get_profile"
+          name: "Get voice profile"
+          description: "Return style guide, example posts, banned phrases and brand colours."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/voice", operation: "get_profile"}
+          input_schema_ref: "schema://nova/linkedin-post-in-your-voice/voice-query@0.1.0"
+          output_schema_ref: "schema://nova/linkedin-post-in-your-voice/voice-profile@0.1.0"
+          objects:
+            - {object_id: "nova.content.voice_profile", name: "Voice profile", description: "The user's writing style and examples", operations: ["read"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/linkedin-post-in-your-voice/voice-profile@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/linkedin-post-in-your-voice/voice-query@0.1.0", output_schema_ref: "schema://nova/linkedin-post-in-your-voice/voice-profile@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:voice:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["profile_missing"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["guide present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.topics.store"
+      name: "Topic store"
+      description: "Topic candidates picked by the user."
+      intent_examples: ["draft a post on topic 2"]
+      input_schema_ref: "schema://nova/linkedin-post-in-your-voice/request@0.1.0"
+      output_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"
+      risk_class: "low"
+      preconditions: ["topic in the user's tenant"]
+      postconditions: ["topic returned"]
+      tools:
+        - tool_id: "nova.topics.store.get"
+          name: "Get topic"
+          description: "Return one topic's title, URL and snippet."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/topics/store-get", operation: "get"}
+          input_schema_ref: "schema://nova/linkedin-post-in-your-voice/request@0.1.0"
+          output_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"
+          objects:
+            - {object_id: "nova.topics.topic", name: "Topic candidate", description: "Stored trending item", operations: ["read"], scope_rules: ["user's tenant only"], schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/linkedin-post-in-your-voice/request@0.1.0", output_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["topics:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["topic belongs to the tenant"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.research.fetch"
+      name: "Page fetch"
+      description: "Read a public article as plain text."
+      intent_examples: []
+      input_schema_ref: "schema://nova/linkedin-post-in-your-voice/fetch-input@0.1.0"
+      output_schema_ref: "schema://nova/linkedin-post-in-your-voice/page@0.1.0"
+      risk_class: "low"
+      preconditions: ["public URL"]
+      postconditions: ["text or no-source marker"]
+      tools:
+        - tool_id: "nova.research.fetch.get"
+          name: "Fetch page"
+          description: "HTTP GET, size cap, HTML stripped to text, no logins."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/research/fetch", operation: "get"}
+          input_schema_ref: "schema://nova/linkedin-post-in-your-voice/fetch-input@0.1.0"
+          output_schema_ref: "schema://nova/linkedin-post-in-your-voice/page@0.1.0"
+          objects:
+            - {object_id: "nova.research.source", name: "Fetched page", description: "Public article text (transient)", operations: ["read"], scope_rules: ["public pages only"], schema_ref: "schema://nova/linkedin-post-in-your-voice/page@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/linkedin-post-in-your-voice/fetch-input@0.1.0", output_schema_ref: "schema://nova/linkedin-post-in-your-voice/page@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["web:fetch:public"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["HTTP request to the source site"], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: [], error_codes: ["http_error", "too_little_text"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["text at least 500 characters and on topic"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.draft"
+      name: "Post drafting"
+      description: "Draft a LinkedIn post (hook + body) and optional image prompt in the user's voice."
+      intent_examples: ["write a LinkedIn post about this", "draft a post on topic 2 with my take"]
+      input_schema_ref: "schema://nova/linkedin-post-in-your-voice/request@0.1.0"
+      output_schema_ref: "schema://nova/linkedin-post-in-your-voice/post-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["selected tier ready", "voice profile loaded"]
+      postconditions: ["draft parsed into hook, body, hashtags, first comment, image prompt"]
+      tools:
+        - tool_id: "nova.content.draft.write"
+          name: "Write post"
+          description: "LLM draft from source, brief and angle only; caption and image prompt split by a delimiter line (not JSON-in-text)."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/draft", operation: "write"}
+          input_schema_ref: "schema://nova/linkedin-post-in-your-voice/request@0.1.0"
+          output_schema_ref: "schema://nova/linkedin-post-in-your-voice/post-result@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Draft post (not yet queued)", operations: ["create"], scope_rules: ["run only until queued"], schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"}
+          variants:
+            - {variant_id: "pro", description: "Default; reasoning-capable top tier; ~4000 output-token headroom; empty completion = failure", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/linkedin-post-in-your-voice/request@0.1.0", output_schema_ref: "schema://nova/linkedin-post-in-your-voice/post-result@0.1.0", constraints: ["no automatic tier switch"], fallback_variant_id: null}
+            - {variant_id: "medium", description: "Explicit choice only; lower cost; tier recorded in result", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/linkedin-post-in-your-voice/request@0.1.0", output_schema_ref: "schema://nova/linkedin-post-in-your-voice/post-result@0.1.0", constraints: ["explicit selection only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["llm:invoke:pro", "llm:invoke:medium"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["source text, brief and voice profile sent to the model provider"], idempotency: "not_applicable", timeout_seconds: 90, max_attempts: 2, rate_limits: ["per-draft token cap TBD"], error_codes: ["tier_unavailable", "empty_completion", "parse_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["hook, body present after parsing"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.verify"
+      name: "Draft checks"
+      description: "Check format rules and that every claim traces to the source or the user's brief."
+      intent_examples: []
+      input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post-result@0.1.0"
+      output_schema_ref: "schema://nova/linkedin-post-in-your-voice/verify-report@0.1.0"
+      risk_class: "low"
+      preconditions: ["draft parsed"]
+      postconditions: ["pass, or failures listed"]
+      tools:
+        - tool_id: "nova.content.verify.format"
+          name: "Check format"
+          description: "Hook <= 210 chars, total 1300-1900 chars, 0-3 hashtags, no links in body, no banned phrases."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/verify-format", operation: "format"}
+          input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post-result@0.1.0"
+          output_schema_ref: "schema://nova/linkedin-post-in-your-voice/verify-report@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Draft post", operations: ["read"], scope_rules: ["run only"], schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"}
+          variants:
+            - {variant_id: "linkedin", description: "LinkedIn format profile; the only profile in this recipe", compatible_environments: [], input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post-result@0.1.0", output_schema_ref: "schema://nova/linkedin-post-in-your-voice/verify-report@0.1.0", constraints: ["deterministic"], fallback_variant_id: null}
+          authorization: {required: false, identity_provider: "TBD", required_scopes: [], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 1, rate_limits: [], error_codes: ["hook_too_long", "length_out_of_range", "too_many_hashtags", "link_in_body", "banned_phrase"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["all rules pass"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.verify.claims"
+          name: "Check claims"
+          description: "Numbers, names, dates and products appear in source, brief or angle; no invented first-person experience; launches lead with the news."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/verify-claims", operation: "claims"}
+          input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post-result@0.1.0"
+          output_schema_ref: "schema://nova/linkedin-post-in-your-voice/verify-report@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Draft post", operations: ["read"], scope_rules: ["run only"], schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"}
+          variants:
+            - {variant_id: "rules", description: "Default deterministic checks", compatible_environments: [], input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post-result@0.1.0", output_schema_ref: "schema://nova/linkedin-post-in-your-voice/verify-report@0.1.0", constraints: [], fallback_variant_id: null}
+            - {variant_id: "llm-check", description: "Optional second pass on a model different from the writer; can only flag", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post-result@0.1.0", output_schema_ref: "schema://nova/linkedin-post-in-your-voice/verify-report@0.1.0", constraints: ["operator-enabled only", "model differs from writer"], fallback_variant_id: null}
+          authorization: {required: false, identity_provider: "TBD", required_scopes: [], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 1, rate_limits: [], error_codes: ["ungrounded_specific", "invented_experience", "news_buried"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["100% of specifics grounded"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.queue"
+      name: "Content approval queue"
+      description: "Hold drafts and their approval state."
+      intent_examples: ["approve post 88", "schedule it for Tuesday 9am"]
+      input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"
+      output_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"
+      risk_class: "medium"
+      preconditions: ["user's tenant exists"]
+      postconditions: ["status transitions valid; published only with a URL"]
+      tools:
+        - tool_id: "nova.content.queue.save_draft"
+          name: "Save draft"
+          description: "Insert a draft; an existing client key returns the existing post."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/queue-save", operation: "save_draft"}
+          input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"
+          output_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Queued post", operations: ["create"], scope_rules: ["user's tenant only", "status draft on insert"], schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0", output_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0", constraints: ["idempotent on client key"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:queue:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["queue row created"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["duplicate", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read back with matching content hash"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.queue.edit"
+          name: "Edit post"
+          description: "Change hook, body or image prompt of a non-published post; voids prior approval."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/queue-edit", operation: "edit"}
+          input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"
+          output_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Queued post", operations: ["update"], scope_rules: ["hook, body, image_prompt only", "not when published"], schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0", output_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0", constraints: ["new content hash; approval voided"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:queue:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["post content changed"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["already_published", "not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["new hash stored", "approval voided"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.queue.set_status"
+          name: "Set post status"
+          description: "Valid transitions among draft, approved, scheduled, published, rejected; published only with a URL."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/queue-status", operation: "set_status"}
+          input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post-status@0.1.0"
+          output_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Queued post", operations: ["update"], scope_rules: ["status, scheduled_for, published_url only"], schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post-status@0.1.0", output_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0", constraints: ["approved/scheduled/published require a user approval record"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:queue:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["post status changed"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["invalid_transition", "approval_missing"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status read back", "published implies URL present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.publish"
+      name: "LinkedIn publishing (BLOCKED)"
+      description: "Publish an approved post to the user's own LinkedIn profile, once, after a per-post approval."
+      intent_examples: ["publish post 88 now"]
+      input_schema_ref: "schema://nova/linkedin-post-in-your-voice/publish-input@0.1.0"
+      output_schema_ref: "schema://nova/linkedin-post-in-your-voice/publish-result@0.1.0"
+      risk_class: "high"
+      preconditions: ["user's LinkedIn app with member-posting access", "active OAuth grant with posting scope", "approval hash equals content hash"]
+      postconditions: ["post identifier returned and recorded, or blocked/unknown state reported"]
+      tools:
+        - tool_id: "nova.content.publish.check_connection"
+          name: "Check LinkedIn connection"
+          description: "Report grant validity, expiry and posting scope; never returns the token."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/linkedin-connection", operation: "check_connection"}
+          input_schema_ref: "schema://nova/linkedin-post-in-your-voice/publish-input@0.1.0"
+          output_schema_ref: "schema://nova/linkedin-post-in-your-voice/connection-state@0.1.0"
+          objects:
+            - {object_id: "nova.content.linkedin_grant", name: "LinkedIn grant", description: "Reference to the user's OAuth grant (held by the runtime)", operations: ["read"], scope_rules: ["metadata only; token never exposed"], schema_ref: "schema://nova/linkedin-post-in-your-voice/connection-state@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/linkedin-post-in-your-voice/publish-input@0.1.0", output_schema_ref: "schema://nova/linkedin-post-in-your-voice/connection-state@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "LinkedIn OAuth (user's own app)", required_scopes: ["content:publish:linkedin"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["no_app", "not_approved", "expired", "missing_scope"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["expiry later than now + 5 minutes when active"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.publish.linkedin"
+          name: "Publish to LinkedIn"
+          description: "Create one member post with the approved text; no automatic retry."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/content/linkedin-publish", operation: "create_member_post"}
+          input_schema_ref: "schema://nova/linkedin-post-in-your-voice/publish-input@0.1.0"
+          output_schema_ref: "schema://nova/linkedin-post-in-your-voice/publish-result@0.1.0"
+          objects:
+            - {object_id: "nova.content.linkedin_post", name: "LinkedIn post", description: "Public post on the user's profile", operations: ["create"], scope_rules: ["user's own member profile only", "one post per approval"], schema_ref: "schema://nova/linkedin-post-in-your-voice/publish-result@0.1.0"}
+          variants:
+            - {variant_id: "member-post", description: "User's own LinkedIn app via OAuth; member posting permission (w_member_social at time of writing — confirm with LinkedIn docs); no alternative publish path", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/linkedin-post-in-your-voice/publish-input@0.1.0", output_schema_ref: "schema://nova/linkedin-post-in-your-voice/publish-result@0.1.0", constraints: ["per-post approval", "no browser automation", "no company pages"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "LinkedIn OAuth (user's own app)", required_scopes: ["content:publish:linkedin", "provider: w_member_social (UNVERIFIED against current LinkedIn docs)"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["public post on the user's LinkedIn profile"], idempotency: "required", timeout_seconds: 20, max_attempts: 1, rate_limits: ["operator daily cap TBD (proposed 2)", "LinkedIn platform limits"], error_codes: ["connection_blocked", "rejected_by_platform", "outcome_unknown", "daily_cap_reached"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["response contains a post identifier", "published text hash equals approval hash"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.due"
+      name: "Scheduled-post reminders"
+      description: "Remind the user when a scheduled post is due; never auto-publish."
+      intent_examples: []
+      input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"
+      output_schema_ref: "schema://nova/linkedin-post-in-your-voice/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["reminder delivered before it is marked notified"]
+      tools:
+        - tool_id: "nova.content.due.notify"
+          name: "Notify due post"
+          description: "Every 5 minutes: send the reminder, then mark it notified; rescheduling re-arms it."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/due-notify", operation: "notify_due"}
+          input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"
+          output_schema_ref: "schema://nova/linkedin-post-in-your-voice/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Scheduled post", operations: ["read", "update"], scope_rules: ["due_notified_at only"], schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/linkedin-post-in-your-voice/post@0.1.0", output_schema_ref: "schema://nova/linkedin-post-in-your-voice/delivery@0.1.0", constraints: ["send-then-mark", "never publishes"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner", "content:queue:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["reminder delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 1, rate_limits: ["one reminder per scheduled time"], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["receipt before mark", "no publish call made"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

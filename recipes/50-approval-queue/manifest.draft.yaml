@@ -1,0 +1,225 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.ops"
+    name: "Nova — Operations"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Approval gateway for outbound actions: owner approves or rejects one exact action scope, with expiry, single use and a full audit trail."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Transactional database for approval records with role-scoped grants"
+        - "Owner dashboard with sign-in and a CSRF-protected decision endpoint"
+        - "Owner notification channel"
+        - "Activity log (nova.ops.activity-log) for same-transaction audit entries"
+        - "Scheduler for the expiry sweep"
+        - "Operator-registered action types"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.approvals.queue"
+      name: "Approval queue"
+      description: "Hold approvals through pending, decided, consumed and expired states with scope binding and single use."
+      intent_examples: ["ask me before sending", "is the recap email approved"]
+      input_schema_ref: "schema://nova/approval-queue/approval-request@0.1.0"
+      output_schema_ref: "schema://nova/approval-queue/approval@0.1.0"
+      risk_class: "high"
+      preconditions: ["action type registered", "requester allowed for the action type"]
+      postconditions: ["every transition audited in the same transaction", "at most one consume per approval"]
+      tools:
+        - tool_id: "nova.approvals.queue.request"
+          name: "Request approval"
+          description: "Validate, canonicalise and hash the scope, create a pending approval with two hashed decision tokens and an audit entry."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/approvals/request", operation: "request"}
+          input_schema_ref: "schema://nova/approval-queue/approval-request@0.1.0"
+          output_schema_ref: "schema://nova/approval-queue/approval@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One approval for one action scope", operations: ["create"], scope_rules: ["owner's tenant", "unique requested_by plus request_key"], schema_ref: "schema://nova/approval-queue/approval@0.1.0"}
+            - {object_id: "nova.approvals.action_type", name: "Action type", description: "Operator-registered outbound action with risk class and limits", operations: ["read"], scope_rules: ["registered types only"], schema_ref: "schema://nova/approval-queue/action-type@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/approval-queue/approval-request@0.1.0", output_schema_ref: "schema://nova/approval-queue/approval@0.1.0", constraints: ["secret scan on summary and preview", "expiry capped by action type", "at most 20 pending per requester"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["approvals:request", "activity:append"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["approval record created", "audit entry created"], idempotency: "required", timeout_seconds: 5, max_attempts: 2, rate_limits: ["20 pending per requester"], error_codes: ["invalid_request", "unregistered_action", "requester_not_allowed", "secret_in_summary", "too_many_pending"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["record and audit entry read back", "tokens stored only as hashes"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.approvals.queue.cancel"
+          name: "Cancel request"
+          description: "Requester withdraws its own pending approval; tokens spent; audited."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/approvals/cancel", operation: "cancel"}
+          input_schema_ref: "schema://nova/approval-queue/approval-ref@0.1.0"
+          output_schema_ref: "schema://nova/approval-queue/approval@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One approval for one action scope", operations: ["update"], scope_rules: ["own pending requests only", "state pending to cancelled only"], schema_ref: "schema://nova/approval-queue/approval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/approval-queue/approval-ref@0.1.0", output_schema_ref: "schema://nova/approval-queue/approval@0.1.0", constraints: [], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["approvals:cancel", "activity:append"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["approval cancelled", "audit entry created"], idempotency: "required", timeout_seconds: 5, max_attempts: 2, rate_limits: [], error_codes: ["not_pending", "not_requester"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["state cancelled", "links show invalid"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.approvals.queue.status"
+          name: "Approval status"
+          description: "Return the state after recomputing the scope hash from the presented scope."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/approvals/status", operation: "status"}
+          input_schema_ref: "schema://nova/approval-queue/scope-check@0.1.0"
+          output_schema_ref: "schema://nova/approval-queue/approval@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One approval for one action scope", operations: ["read"], scope_rules: ["requester or owner only"], schema_ref: "schema://nova/approval-queue/approval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/approval-queue/scope-check@0.1.0", output_schema_ref: "schema://nova/approval-queue/approval@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["approvals:status"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 3, max_attempts: 3, rate_limits: [], error_codes: ["not_found", "scope_mismatch"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["hash comparison result returned explicitly"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.approvals.queue.consume"
+          name: "Consume approval"
+          description: "Conditional update approved to consumed when requester, scope hash and use_by all match; returns a grant ID; never retried after an ambiguous result."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/approvals/consume", operation: "consume"}
+          input_schema_ref: "schema://nova/approval-queue/scope-check@0.1.0"
+          output_schema_ref: "schema://nova/approval-queue/consume-result@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One approval for one action scope", operations: ["update"], scope_rules: ["requester only", "state approved to consumed only", "affects at most one row"], schema_ref: "schema://nova/approval-queue/approval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/approval-queue/scope-check@0.1.0", output_schema_ref: "schema://nova/approval-queue/consume-result@0.1.0", constraints: ["single use", "scope hash recomputed by the queue"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["approvals:consume", "activity:append"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["approval consumed", "audit entry created"], idempotency: "required", timeout_seconds: 5, max_attempts: 1, rate_limits: [], error_codes: ["not_approved", "expired", "already_consumed", "scope_mismatch", "not_requester"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["affected row count equals 1", "audit entry present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.approvals.queue.record_outcome"
+          name: "Record outcome"
+          description: "Set the outcome once for a consumed approval with the matching grant ID."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/approvals/outcome", operation: "record_outcome"}
+          input_schema_ref: "schema://nova/approval-queue/outcome@0.1.0"
+          output_schema_ref: "schema://nova/approval-queue/approval@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One approval for one action scope", operations: ["update"], scope_rules: ["outcome and outcome_at only", "set once"], schema_ref: "schema://nova/approval-queue/approval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/approval-queue/outcome@0.1.0", output_schema_ref: "schema://nova/approval-queue/approval@0.1.0", constraints: [], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["approvals:outcome", "activity:append"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["outcome recorded", "audit entry created"], idempotency: "required", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["not_consumed", "grant_mismatch", "outcome_already_set"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["outcome read back"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.approvals.queue.expire_sweep"
+          name: "Expire sweep"
+          description: "Expire pending approvals past expires_at and approved ones past use_by; spend tokens; audit."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/approvals/expire", operation: "expire_sweep"}
+          input_schema_ref: "schema://nova/approval-queue/sweep-request@0.1.0"
+          output_schema_ref: "schema://nova/approval-queue/sweep-result@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One approval for one action scope", operations: ["update"], scope_rules: ["state to expired only, deadline passed"], schema_ref: "schema://nova/approval-queue/approval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/approval-queue/sweep-request@0.1.0", output_schema_ref: "schema://nova/approval-queue/sweep-result@0.1.0", constraints: ["safety never depends on the sweep"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["approvals:expire", "activity:append"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["approvals expired", "audit entries created"], idempotency: "required", timeout_seconds: 30, max_attempts: 2, rate_limits: ["every 5 minutes"], error_codes: ["sweep_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["zero overdue pending or approved rows after sweep"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.approvals.queue.list_pending"
+          name: "List pending"
+          description: "Paginated pending approvals for the owner dashboard and digests."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/approvals/pending", operation: "list_pending"}
+          input_schema_ref: "schema://nova/approval-queue/pending-query@0.1.0"
+          output_schema_ref: "schema://nova/approval-queue/pending-list@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One approval for one action scope", operations: ["read"], scope_rules: ["owner session only"], schema_ref: "schema://nova/approval-queue/approval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/approval-queue/pending-query@0.1.0", output_schema_ref: "schema://nova/approval-queue/pending-list@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["approvals:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 3, max_attempts: 2, rate_limits: [], error_codes: []}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["only pending items returned"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.approvals.decision"
+      name: "Human decision"
+      description: "Authenticated owner approves or rejects one approval; no automation or agent identity may call it."
+      intent_examples: []
+      input_schema_ref: "schema://nova/approval-queue/decision@0.1.0"
+      output_schema_ref: "schema://nova/approval-queue/approval@0.1.0"
+      risk_class: "high"
+      preconditions: ["valid unspent token", "pending and unexpired", "owner session when session_required"]
+      postconditions: ["decision, decider, channel and timestamp recorded", "tokens spent"]
+      tools:
+        - tool_id: "nova.approvals.decision.view"
+          name: "View decision page"
+          description: "GET: render summary, preview, expiry and an explicit confirm button; changes nothing."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/approvals/view", operation: "view"}
+          input_schema_ref: "schema://nova/approval-queue/approval-ref@0.1.0"
+          output_schema_ref: "schema://nova/approval-queue/decision-view@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One approval for one action scope", operations: ["read"], scope_rules: ["token holder or owner session"], schema_ref: "schema://nova/approval-queue/approval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/approval-queue/approval-ref@0.1.0", output_schema_ref: "schema://nova/approval-queue/decision-view@0.1.0", constraints: ["side-effect free"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["approvals:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 1, rate_limits: ["5 attempts per token per minute"], error_codes: ["link_invalid", "expired"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["zero state changes on GET"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.approvals.decision.decide"
+          name: "Decide"
+          description: "POST with CSRF and decision token: compare-and-swap pending to approved or rejected, set use_by, spend tokens, audit — one transaction."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/approvals/decide", operation: "decide"}
+          input_schema_ref: "schema://nova/approval-queue/decision@0.1.0"
+          output_schema_ref: "schema://nova/approval-queue/approval@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One approval for one action scope", operations: ["update"], scope_rules: ["owner principal only", "pending to approved or rejected only", "decided_by never equals requested_by"], schema_ref: "schema://nova/approval-queue/approval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/approval-queue/decision@0.1.0", output_schema_ref: "schema://nova/approval-queue/approval@0.1.0", constraints: ["human principal only", "high and critical need a signed-in session"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["approvals:decide (human decision endpoint only)", "activity:append"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["approval decided", "tokens spent", "audit entry created"], idempotency: "required", timeout_seconds: 5, max_attempts: 1, rate_limits: ["5 attempts per token per minute"], error_codes: ["link_invalid", "expired", "session_required", "already_decided", "tokens_locked"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["decided_by is an owner principal", "audit entry present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.approvals.prompt"
+      name: "Approval prompt"
+      description: "Ask the owner, using the safest variant the risk class allows."
+      intent_examples: []
+      input_schema_ref: "schema://nova/approval-queue/prompt@0.1.0"
+      output_schema_ref: "schema://nova/approval-queue/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["approval pending"]
+      postconditions: ["prompt delivered or item visible on the dashboard"]
+      tools:
+        - tool_id: "nova.approvals.prompt.send"
+          name: "Send approval prompt"
+          description: "Plain-text prompt to the owner with links or buttons, or dashboard-only for high risk."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/approvals/prompt", operation: "send"}
+          input_schema_ref: "schema://nova/approval-queue/prompt@0.1.0"
+          output_schema_ref: "schema://nova/approval-queue/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "An approval prompt to the owner", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/approval-queue/prompt@0.1.0"}
+          variants:
+            - {variant_id: "chat-links", description: "Default: links to a confirmation page; opening a link changes nothing", compatible_environments: ["owner chat channel"], input_schema_ref: "schema://nova/approval-queue/prompt@0.1.0", output_schema_ref: "schema://nova/approval-queue/delivery@0.1.0", constraints: ["low and medium risk"], fallback_variant_id: "dashboard"}
+            - {variant_id: "chat-buttons", description: "Inline buttons; callback verified and from the owner's user ID", compatible_environments: ["chat platform with verifiable callbacks"], input_schema_ref: "schema://nova/approval-queue/prompt@0.1.0", output_schema_ref: "schema://nova/approval-queue/delivery@0.1.0", constraints: ["low and medium risk only"], fallback_variant_id: "dashboard"}
+            - {variant_id: "dashboard", description: "No message; decision from a signed-in owner session; required for high and critical", compatible_environments: ["owner dashboard"], input_schema_ref: "schema://nova/approval-queue/prompt@0.1.0", output_schema_ref: "schema://nova/approval-queue/delivery@0.1.0", constraints: ["never falls back to a chat variant for high risk"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["prompt delivered to the owner"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt or dashboard visibility"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.activity.log"
+      name: "Activity log (dependency)"
+      description: "Append-only audit trail provided by the nova.ops.activity-log recipe."
+      intent_examples: []
+      input_schema_ref: "schema://nova/approval-queue/audit-entry@0.1.0"
+      output_schema_ref: "schema://nova/approval-queue/audit-entry@0.1.0"
+      risk_class: "low"
+      preconditions: ["activity log installed"]
+      postconditions: ["one entry per approval state change"]
+      tools:
+        - tool_id: "nova.activity.log.append"
+          name: "Append audit entry"
+          description: "Write one entry inside the same transaction as the approval state change; no payload, no tokens."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/activity/append", operation: "append"}
+          input_schema_ref: "schema://nova/approval-queue/audit-entry@0.1.0"
+          output_schema_ref: "schema://nova/approval-queue/audit-entry@0.1.0"
+          objects:
+            - {object_id: "nova.ops.activity_entry", name: "Audit entry", description: "One append-only activity record", operations: ["create"], scope_rules: ["append-only", "allowlisted meta keys only"], schema_ref: "schema://nova/approval-queue/audit-entry@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/approval-queue/audit-entry@0.1.0", output_schema_ref: "schema://nova/approval-queue/audit-entry@0.1.0", constraints: ["same transaction as the state change"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["activity:append"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["audit entry created"], idempotency: "required", timeout_seconds: 2, max_attempts: 1, rate_limits: [], error_codes: ["append_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["entry exists for each transition"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

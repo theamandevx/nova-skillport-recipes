@@ -1,0 +1,156 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.finance"
+    name: "Nova — Finance"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Log detected payments and reconcile them against open obligations (reference first, else product + amount + timing); mark paid or advance the cycle. Paid-tracking only; no balance changes."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Obligation store and payment-confirmation hand-off from nova.finance.upcoming-payments-radar"
+        - "Payments-log store with a unique source reference"
+        - "No finance-hub write scope is requested or needed"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.finance.payments"
+      name: "Payments log and reconciliation"
+      description: "Record detected payments and settle the matching obligation atomically."
+      intent_examples: ["I paid the power bill", "mark the cloud subscription paid"]
+      input_schema_ref: "schema://nova/auto-mark-bills-paid/payment-event@0.1.0"
+      output_schema_ref: "schema://nova/auto-mark-bills-paid/reconcile-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["valid outgoing payment event"]
+      postconditions: ["one log row per source_ref", "at most one obligation settled per event"]
+      tools:
+        - tool_id: "nova.finance.payments.get_by_source"
+          name: "Get payment by source"
+          description: "Return the log row for a source reference, if any."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/payments-get", operation: "get_by_source"}
+          input_schema_ref: "schema://nova/auto-mark-bills-paid/source-ref@0.1.0"
+          output_schema_ref: "schema://nova/auto-mark-bills-paid/payment-log@0.1.0"
+          objects:
+            - {object_id: "nova.finance.payment_log", name: "Payments-log row", description: "One detected or stated payment", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/auto-mark-bills-paid/payment-log@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/auto-mark-bills-paid/source-ref@0.1.0", output_schema_ref: "schema://nova/auto-mark-bills-paid/payment-log@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:payments:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["0 or 1 rows returned"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.payments.match"
+          name: "Match payment"
+          description: "Find candidate open obligations and return a decision; read-only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/payments-match", operation: "match"}
+          input_schema_ref: "schema://nova/auto-mark-bills-paid/payment-event@0.1.0"
+          output_schema_ref: "schema://nova/auto-mark-bills-paid/match-decision@0.1.0"
+          objects:
+            - {object_id: "nova.finance.obligation", name: "Obligation", description: "One payment obligation", operations: ["read"], scope_rules: ["requesting user's tenant only", "open statuses only"], schema_ref: "schema://nova/auto-mark-bills-paid/obligation-settle-view@0.1.0"}
+          variants:
+            - {variant_id: "user-stated", description: "The user names or selects the obligation; no inference; selected first", compatible_environments: [], input_schema_ref: "schema://nova/auto-mark-bills-paid/payment-event@0.1.0", output_schema_ref: "schema://nova/auto-mark-bills-paid/match-decision@0.1.0", constraints: ["read-only", "obligation must be open and in tenant"], fallback_variant_id: "ref"}
+            - {variant_id: "ref", description: "Exact normalised invoice/order number against an open obligation's external_ref; wins even if series differs", compatible_environments: [], input_schema_ref: "schema://nova/auto-mark-bills-paid/payment-event@0.1.0", output_schema_ref: "schema://nova/auto-mark-bills-paid/match-decision@0.1.0", constraints: ["read-only", "exact equality"], fallback_variant_id: "series-amount-timing"}
+            - {variant_id: "series-amount-timing", description: "series_key equal, currency equal, amount within tolerance (default 12%), paid_date within [due-5d, due+45d]; exactly one candidate", compatible_environments: [], input_schema_ref: "schema://nova/auto-mark-bills-paid/payment-event@0.1.0", output_schema_ref: "schema://nova/auto-mark-bills-paid/match-decision@0.1.0", constraints: ["read-only", "amount and currency required", "unique candidate required"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:obligations:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["no_candidate", "ambiguous", "prior_cycle"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every candidate satisfies its variant's conditions on recomputation"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.payments.commit"
+          name: "Commit payment"
+          description: "One transaction: insert the log row and settle the matched obligation (one-off paid, or periodic due_date + one period), or log only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/payments-commit", operation: "commit"}
+          input_schema_ref: "schema://nova/auto-mark-bills-paid/commit-input@0.1.0"
+          output_schema_ref: "schema://nova/auto-mark-bills-paid/reconcile-result@0.1.0"
+          objects:
+            - {object_id: "nova.finance.payment_log", name: "Payments-log row", description: "One detected or stated payment", operations: ["create"], scope_rules: ["requesting user's tenant only", "unique source_ref"], schema_ref: "schema://nova/auto-mark-bills-paid/payment-log@0.1.0"}
+            - {object_id: "nova.finance.obligation", name: "Obligation", description: "One payment obligation", operations: ["update"], scope_rules: ["fields: status, paid_at, paid_basis, due_date (+1 period), cycle flags, last_paid_at", "cycle guard on expected due_date"], schema_ref: "schema://nova/auto-mark-bills-paid/obligation-settle-view@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Security-definer database function; atomic; only the default variant is supported", compatible_environments: ["PostgreSQL-compatible store"], input_schema_ref: "schema://nova/auto-mark-bills-paid/commit-input@0.1.0", output_schema_ref: "schema://nova/auto-mark-bills-paid/reconcile-result@0.1.0", constraints: ["recomputes the decision server-side", "no finance-hub writes"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:payments:write", "finance:obligations:settle"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["payments-log row created", "obligation closed or advanced", "history row written"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: ["serialised per obligation"], error_codes: ["payment_dup", "cycle_moved", "decision_mismatch"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["log row exists once", "new due = old due + one period, or status paid with basis"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.payments.link"
+          name: "Link payment (user-approved)"
+          description: "Link an ambiguous or unmatched log row to the obligation the user picks, then settle via commit."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/payments-link", operation: "link"}
+          input_schema_ref: "schema://nova/auto-mark-bills-paid/link-input@0.1.0"
+          output_schema_ref: "schema://nova/auto-mark-bills-paid/reconcile-result@0.1.0"
+          objects:
+            - {object_id: "nova.finance.payment_log", name: "Payments-log row", description: "One detected or stated payment", operations: ["update"], scope_rules: ["fields: matched_obligation_id, match_status", "user approval required"], schema_ref: "schema://nova/auto-mark-bills-paid/payment-log@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/auto-mark-bills-paid/link-input@0.1.0", output_schema_ref: "schema://nova/auto-mark-bills-paid/reconcile-result@0.1.0", constraints: ["approval_id required"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:payments:write", "finance:obligations:settle"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["log row linked", "obligation settled"], idempotency: "required", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["not_ambiguous", "obligation_closed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["link recorded with approval_id"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.obligations"
+      name: "Payment schedule"
+      description: "Read obligations and close auto-charge one-offs past due as presumed paid."
+      intent_examples: []
+      input_schema_ref: "schema://nova/auto-mark-bills-paid/sweep-input@0.1.0"
+      output_schema_ref: "schema://nova/auto-mark-bills-paid/obligation-settle-view@0.1.0"
+      risk_class: "low"
+      preconditions: ["presumed-paid enabled for the sweep"]
+      postconditions: ["presumed closures labelled presumed_auto_charge"]
+      tools:
+        - tool_id: "nova.finance.obligations.presumed_paid_sweep"
+          name: "Presumed-paid sweep"
+          description: "Close one-off/unknown-recurrence auto-charge obligations past due + grace with no failed-payment notice; log auto:<obligation_id>."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/obligations-presumed-sweep", operation: "presumed_paid_sweep"}
+          input_schema_ref: "schema://nova/auto-mark-bills-paid/sweep-input@0.1.0"
+          output_schema_ref: "schema://nova/auto-mark-bills-paid/sweep-result@0.1.0"
+          objects:
+            - {object_id: "nova.finance.obligation", name: "Obligation", description: "One payment obligation", operations: ["update"], scope_rules: ["auto_charge one_off/unknown only", "fields: status, paid_at, paid_basis"], schema_ref: "schema://nova/auto-mark-bills-paid/obligation-settle-view@0.1.0"}
+            - {object_id: "nova.finance.payment_log", name: "Payments-log row", description: "auto:<obligation_id> presumed row", operations: ["create"], scope_rules: ["unique source_ref"], schema_ref: "schema://nova/auto-mark-bills-paid/payment-log@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported; configurable on/off", compatible_environments: ["PostgreSQL-compatible store"], input_schema_ref: "schema://nova/auto-mark-bills-paid/sweep-input@0.1.0", output_schema_ref: "schema://nova/auto-mark-bills-paid/sweep-result@0.1.0", constraints: ["always labelled presumed", "skips series with a failed-payment notice"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:obligations:settle", "finance:payments:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["obligations closed as presumed paid", "auto log rows created"], idempotency: "required", timeout_seconds: 30, max_attempts: 3, rate_limits: ["once per reminder run"], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["eligible count after sweep = 0", "every closure has a matching auto: log row"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.obligations.list"
+          name: "List obligations"
+          description: "Read obligations for verification."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/obligations-list", operation: "list"}
+          input_schema_ref: "schema://nova/auto-mark-bills-paid/obligation-query@0.1.0"
+          output_schema_ref: "schema://nova/auto-mark-bills-paid/obligation-settle-view@0.1.0"
+          objects:
+            - {object_id: "nova.finance.obligation", name: "Obligation", description: "One payment obligation", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/auto-mark-bills-paid/obligation-settle-view@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/auto-mark-bills-paid/obligation-query@0.1.0", output_schema_ref: "schema://nova/auto-mark-bills-paid/obligation-settle-view@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:obligations:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 2, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["rows belong to the requesting tenant"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Ask the requesting user to resolve an ambiguous payment match."
+      intent_examples: []
+      input_schema_ref: "schema://nova/auto-mark-bills-paid/reconcile-result@0.1.0"
+      output_schema_ref: "schema://nova/auto-mark-bills-paid/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the ambiguity question to the requesting user only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/auto-mark-bills-paid/reconcile-result@0.1.0"
+          output_schema_ref: "schema://nova/auto-mark-bills-paid/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/auto-mark-bills-paid/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/auto-mark-bills-paid/reconcile-result@0.1.0", output_schema_ref: "schema://nova/auto-mark-bills-paid/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

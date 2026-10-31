@@ -1,0 +1,228 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.ops"
+    name: "Nova — Operations"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Snapshot every AI subscription's usage window and every pay-as-you-go credit balance each 30 minutes; stale after 3 hours; warn at 75 percent, critical at 90 percent; observe only."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "organization"
+      prerequisites:
+        - "Read-only usage-window source per subscription (runtime account-usage function or provider usage endpoint)"
+        - "Credit-balance source per pay-as-you-go provider (balance endpoint, or usage ledger plus operator-recorded purchases)"
+        - "Provider registry with roles, billing accounts, fallback chains and policy text"
+        - "Snapshot store; scheduler every 30 minutes; owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.quota.providers"
+      name: "AI backend registry"
+      description: "Configured AI backends with kind, role, billing account, policy text and fallback chain."
+      intent_examples: ["which backend does what?"]
+      input_schema_ref: "schema://nova/ai-quota-monitor/cycle-request@0.1.0"
+      output_schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0"
+      risk_class: "low"
+      preconditions: ["registry configured"]
+      postconditions: ["every provider has a role and billing account"]
+      tools:
+        - tool_id: "nova.quota.providers.list"
+          name: "List providers"
+          description: "Return every configured backend; policy text is owned by configuration."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/quota/providers", operation: "list"}
+          input_schema_ref: "schema://nova/ai-quota-monitor/cycle-request@0.1.0"
+          output_schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0"
+          objects:
+            - {object_id: "nova.quota.provider", name: "Provider entry", description: "One AI backend", operations: ["read"], scope_rules: ["operator configuration only"], schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/ai-quota-monitor/cycle-request@0.1.0", output_schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (collector service identity)", required_scopes: ["quota:providers:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 2, rate_limits: [], error_codes: ["registry_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["role and billing account present for every provider"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.quota.windows"
+      name: "Usage windows"
+      description: "Percent used, window length and reset time per subscription window; side-effect-free."
+      intent_examples: ["how much of my plan is left?"]
+      input_schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0"
+      output_schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0"
+      risk_class: "medium"
+      preconditions: ["provider has a window variant"]
+      postconditions: ["runtime configuration hash unchanged"]
+      tools:
+        - tool_id: "nova.quota.windows.fetch"
+          name: "Fetch usage window"
+          description: "Read each window's percent used, length and reset time; unsupported providers are not_measured, never 0 percent."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/quota/{variant}", operation: "fetch_window"}
+          input_schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0"
+          output_schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0"
+          objects:
+            - {object_id: "nova.quota.window_snapshot", name: "Window snapshot", description: "Usage of one subscription window", operations: ["read"], scope_rules: ["read-only account usage"], schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0"}
+          variants:
+            - {variant_id: "runtime-account-usage", description: "Assistant runtime's own account-usage function; config hash checked before and after; a change stops the variant", compatible_environments: ["providers the runtime supports"], input_schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0", output_schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0", constraints: ["binding binding://nova/quota/runtime-account-usage (UNVERIFIED)", "must not alter runtime configuration"], fallback_variant_id: null}
+            - {variant_id: "provider-usage-api", description: "Provider's documented usage endpoint, read-only", compatible_environments: ["providers with a usage endpoint"], input_schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0", output_schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0", constraints: ["binding binding://nova/quota/provider-usage-api (UNVERIFIED)", "read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (per provider)", required_scopes: ["quota:usage:read", "runtime:account_usage:invoke"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: ["provider read limits apply"], error_codes: ["unsupported", "fetch_failed", "config_changed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["percent within 0-100", "reset time in the future", "config hash unchanged"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.quota.balance"
+      name: "Credit balances"
+      description: "Balance, basis and runway for pay-as-you-go providers."
+      intent_examples: ["how many days of credit are left?"]
+      input_schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0"
+      output_schema_ref: "schema://nova/ai-quota-monitor/balance-snapshot@0.1.0"
+      risk_class: "medium"
+      preconditions: ["provider has a balance variant"]
+      postconditions: ["basis recorded; estimates labelled"]
+      tools:
+        - tool_id: "nova.quota.balance.fetch"
+          name: "Fetch balance"
+          description: "Provider balance endpoint first; ledger-derived estimate only when no endpoint exists; runway from 7-day average spend."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/quota/{variant}", operation: "fetch_balance"}
+          input_schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0"
+          output_schema_ref: "schema://nova/ai-quota-monitor/balance-snapshot@0.1.0"
+          objects:
+            - {object_id: "nova.quota.balance_snapshot", name: "Balance snapshot", description: "Credit balance of one provider", operations: ["read"], scope_rules: ["read-only billing view", "no purchase permissions"], schema_ref: "schema://nova/ai-quota-monitor/balance-snapshot@0.1.0"}
+          variants:
+            - {variant_id: "provider-balance-api", description: "Provider's balance endpoint (read-only); selected first", compatible_environments: ["providers with a balance endpoint"], input_schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0", output_schema_ref: "schema://nova/ai-quota-monitor/balance-snapshot@0.1.0", constraints: ["binding binding://nova/quota/provider-balance-api (UNVERIFIED)", "read-only"], fallback_variant_id: "ledger-derived"}
+            - {variant_id: "ledger-derived", description: "Operator-recorded purchases minus ledger spend since purchase; estimate, labelled; only when no balance endpoint exists", compatible_environments: ["requires nova.ops.cost-per-job ledger"], input_schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0", output_schema_ref: "schema://nova/ai-quota-monitor/balance-snapshot@0.1.0", constraints: ["binding binding://nova/quota/ledger-derived (UNVERIFIED)", "read-only", "basis ledger_estimate"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (per provider)", required_scopes: ["quota:balance:read", "usage:ledger:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: [], error_codes: ["unsupported", "fetch_failed", "ledger_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["basis recorded", "runway null when average spend is 0"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.quota.signals"
+      name: "Exhaustion signals"
+      description: "Evidence from recent call outcomes that a provider has run dry; overrides a positive balance."
+      intent_examples: []
+      input_schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0"
+      output_schema_ref: "schema://nova/ai-quota-monitor/error-signal@0.1.0"
+      risk_class: "low"
+      preconditions: ["error sources readable"]
+      postconditions: ["each signal names its source"]
+      tools:
+        - tool_id: "nova.quota.signals.scan"
+          name: "Scan exhaustion signals"
+          description: "Count insufficient-credit, quota-exceeded, rate-limited and payment-required errors per provider over the last 60 minutes."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/quota/signals", operation: "scan"}
+          input_schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0"
+          output_schema_ref: "schema://nova/ai-quota-monitor/error-signal@0.1.0"
+          objects:
+            - {object_id: "nova.quota.error_signal", name: "Exhaustion signal", description: "Recent exhaustion errors", operations: ["read"], scope_rules: ["operator's own logs and job records", "error codes only"], schema_ref: "schema://nova/ai-quota-monitor/error-signal@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Always runs in addition to the balance variants; only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/ai-quota-monitor/provider@0.1.0", output_schema_ref: "schema://nova/ai-quota-monitor/error-signal@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (collector service identity)", required_scopes: ["quota:signals:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["source_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["recent signal forces exhausted"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.quota.store"
+      name: "Quota snapshot store"
+      description: "Live snapshot columns with last good values kept; policy text untouched; stale rule applied at read time."
+      intent_examples: ["show AI quotas"]
+      input_schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0"
+      output_schema_ref: "schema://nova/ai-quota-monitor/quota-view@0.1.0"
+      risk_class: "low"
+      preconditions: ["store reachable"]
+      postconditions: ["rows older than 3 hours display stale", "unknown values are null"]
+      tools:
+        - tool_id: "nova.quota.store.upsert_snapshot"
+          name: "Upsert snapshot"
+          description: "Write live columns only; on a fetch error update only last_fetch_error; never overwrite policy text or write zeros for unknown values."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/quota/store", operation: "upsert_snapshot"}
+          input_schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0"
+          output_schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0"
+          objects:
+            - {object_id: "nova.quota.window_snapshot", name: "Window snapshot", description: "Stored window usage", operations: ["create", "update"], scope_rules: ["live columns only", "collector identity only"], schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0"}
+            - {object_id: "nova.quota.balance_snapshot", name: "Balance snapshot", description: "Stored balance", operations: ["create", "update"], scope_rules: ["live columns only", "collector identity only"], schema_ref: "schema://nova/ai-quota-monitor/balance-snapshot@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0", output_schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0", constraints: ["upsert keyed by provider and window", "policy text hash unchanged"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (collector service identity)", required_scopes: ["quota:store:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["snapshot rows refreshed"], idempotency: "required", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["write_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["re-read equals written", "policy text unchanged"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.quota.store.record_cycle"
+          name: "Record cycle"
+          description: "Open a cycle with a single-flight lock and close it with per-provider results and alerts."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/quota/store", operation: "record_cycle"}
+          input_schema_ref: "schema://nova/ai-quota-monitor/cycle-request@0.1.0"
+          output_schema_ref: "schema://nova/ai-quota-monitor/cycle-result@0.1.0"
+          objects:
+            - {object_id: "nova.quota.cycle", name: "Cycle record", description: "One monitor cycle", operations: ["create", "update"], scope_rules: ["tenant store only"], schema_ref: "schema://nova/ai-quota-monitor/cycle-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/ai-quota-monitor/cycle-request@0.1.0", output_schema_ref: "schema://nova/ai-quota-monitor/cycle-result@0.1.0", constraints: ["one cycle at a time", "stale lock takeover after 30 minutes"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (collector service identity)", required_scopes: ["quota:store:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["cycle record written", "lock taken and released"], idempotency: "required", timeout_seconds: 5, max_attempts: 2, rate_limits: [], error_codes: ["locked"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every configured provider has an entry"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.quota.store.list"
+          name: "List quotas"
+          description: "Display view: stale when the newest snapshot is older than 3 hours; last known value shown only with its age."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/quota/store", operation: "list"}
+          input_schema_ref: "schema://nova/ai-quota-monitor/cycle-request@0.1.0"
+          output_schema_ref: "schema://nova/ai-quota-monitor/quota-view@0.1.0"
+          objects:
+            - {object_id: "nova.quota.window_snapshot", name: "Window snapshot", description: "Stored window usage", operations: ["read"], scope_rules: ["tenant store only"], schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/ai-quota-monitor/cycle-request@0.1.0", output_schema_ref: "schema://nova/ai-quota-monitor/quota-view@0.1.0", constraints: ["read-only", "never an empty all-fine on error"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["quota:store:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no row older than 3 hours displays anything but stale", "no null shown as 0"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.quota.evaluate"
+      name: "Quota evaluation"
+      description: "Levels per window and balance (warn 75, critical 90), runway, exhaustion override and fallback independence."
+      intent_examples: []
+      input_schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0"
+      output_schema_ref: "schema://nova/ai-quota-monitor/evaluation@0.1.0"
+      risk_class: "low"
+      preconditions: ["snapshots validated and stored"]
+      postconditions: ["each level carries reasons with numbers"]
+      tools:
+        - tool_id: "nova.quota.evaluate.assess"
+          name: "Assess levels"
+          description: "Worst window wins; recent exhaustion signal forces exhausted; stale snapshots count as stale for chain checks; detect missing independent fallback and no working backend."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/quota/evaluate", operation: "assess"}
+          input_schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0"
+          output_schema_ref: "schema://nova/ai-quota-monitor/evaluation@0.1.0"
+          objects:
+            - {object_id: "nova.quota.evaluation", name: "Evaluation", description: "Level and reasons per backend", operations: ["create"], scope_rules: ["in-memory; persisted in the cycle record"], schema_ref: "schema://nova/ai-quota-monitor/evaluation@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Deterministic rules; no LLM; only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/ai-quota-monitor/window-snapshot@0.1.0", output_schema_ref: "schema://nova/ai-quota-monitor/evaluation@0.1.0", constraints: ["warn at 75 percent", "critical at 90 percent", "runway thresholds TBD"], fallback_variant_id: null}
+          authorization: {required: false, identity_provider: "TBD", required_scopes: [], consent_required: false, grant_ref: null, tenant_binding_required: false}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 2, max_attempts: 1, rate_limits: [], error_codes: ["rule_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["74 ok, 75 warn, 90 critical, 100 exhausted"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver threshold, exhaustion, fallback and recovery notices to the owner's channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/ai-quota-monitor/quota-alert@0.1.0"
+      output_schema_ref: "schema://nova/ai-quota-monitor/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "One alert per crossing per window and reset time; one recovery notice; warn held during quiet hours; critical and exhausted always sent."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/ai-quota-monitor/quota-alert@0.1.0"
+          output_schema_ref: "schema://nova/ai-quota-monitor/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A quota alert", operations: ["create"], scope_rules: ["owner channel only", "no account identifiers"], schema_ref: "schema://nova/ai-quota-monitor/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/ai-quota-monitor/quota-alert@0.1.0", output_schema_ref: "schema://nova/ai-quota-monitor/delivery@0.1.0", constraints: ["deduplicated by dedupe_key", "send-then-mark"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["alert delivered to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

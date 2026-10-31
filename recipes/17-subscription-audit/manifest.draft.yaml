@@ -1,0 +1,212 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.finance"
+    name: "Nova — Finance"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Monthly read-only audit of recurring charges: cadence, monthly-equivalent totals per currency and converted, findings and suggestions."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Read access to finance-hub records, payments log and obligation schedule"
+        - "Exchange-rate snapshots from nova.finance.daily-exchange-rates (for multi-currency totals)"
+        - "Operator-approved LLM provider for wording (optional; templates otherwise)"
+        - "Owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.finance.hub"
+      name: "Finance hub records"
+      description: "Read expense records for the analysis window."
+      intent_examples: []
+      input_schema_ref: "schema://nova/subscription-audit/records-query@0.1.0"
+      output_schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0"
+      risk_class: "medium"
+      preconditions: ["read scope"]
+      postconditions: ["rows belong to the tenant and the window"]
+      tools:
+        - tool_id: "nova.finance.hub.records_query"
+          name: "Query records"
+          description: "Expense records in a date window, optionally per account."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/records-query", operation: "records_query"}
+          input_schema_ref: "schema://nova/subscription-audit/records-query@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0"
+          objects:
+            - {object_id: "nova.finance.hub_record", name: "Hub record", description: "A logged transaction", operations: ["read"], scope_rules: ["requesting user's tenant only", "expenses only"], schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/subscription-audit/records-query@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:hub:records:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 30, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["dates within window"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.payments"
+      name: "Payments log"
+      description: "Read detected payments for the analysis window."
+      intent_examples: []
+      input_schema_ref: "schema://nova/subscription-audit/records-query@0.1.0"
+      output_schema_ref: "schema://nova/auto-mark-bills-paid/payment-log@0.1.0"
+      risk_class: "low"
+      preconditions: ["read scope"]
+      postconditions: ["rows belong to the tenant"]
+      tools:
+        - tool_id: "nova.finance.payments.list"
+          name: "List payments"
+          description: "Payments-log rows in a date window."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/payments-list", operation: "list"}
+          input_schema_ref: "schema://nova/subscription-audit/records-query@0.1.0"
+          output_schema_ref: "schema://nova/auto-mark-bills-paid/payment-log@0.1.0"
+          objects:
+            - {object_id: "nova.finance.payment_log", name: "Payments-log row", description: "One detected or stated payment", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/auto-mark-bills-paid/payment-log@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/subscription-audit/records-query@0.1.0", output_schema_ref: "schema://nova/auto-mark-bills-paid/payment-log@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:payments:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 30, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["rows belong to tenant"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.obligations"
+      name: "Payment schedule"
+      description: "Read recurring obligations, including dismissed and cancelled series."
+      intent_examples: []
+      input_schema_ref: "schema://nova/subscription-audit/records-query@0.1.0"
+      output_schema_ref: "schema://nova/upcoming-payments-radar/obligation@0.1.0"
+      risk_class: "low"
+      preconditions: ["read scope"]
+      postconditions: []
+      tools:
+        - tool_id: "nova.finance.obligations.list"
+          name: "List obligations"
+          description: "Recurring obligations with recurrence, status and dismissal reason."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/obligations-list", operation: "list"}
+          input_schema_ref: "schema://nova/subscription-audit/records-query@0.1.0"
+          output_schema_ref: "schema://nova/upcoming-payments-radar/obligation@0.1.0"
+          objects:
+            - {object_id: "nova.finance.obligation", name: "Obligation", description: "One payment obligation", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/upcoming-payments-radar/obligation@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/subscription-audit/records-query@0.1.0", output_schema_ref: "schema://nova/upcoming-payments-radar/obligation@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:obligations:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 30, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["rows belong to tenant"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.subscriptions"
+      name: "Subscription analysis"
+      description: "Deterministic recurring-charge detection, totals and findings; stores only its own report."
+      intent_examples: ["audit my subscriptions", "what do I pay every month"]
+      input_schema_ref: "schema://nova/subscription-audit/config@0.1.0"
+      output_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0"
+      risk_class: "low"
+      preconditions: [">= 3 months of history"]
+      postconditions: ["totals verified by an independent recomputation", "no writes to financial data"]
+      tools:
+        - tool_id: "nova.finance.subscriptions.analyse"
+          name: "Analyse recurring charges"
+          description: "Normalise and group charges, detect cadence, compute monthly equivalents and totals (decimal arithmetic), detect findings."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/subscriptions-analyse", operation: "analyse"}
+          input_schema_ref: "schema://nova/subscription-audit/config@0.1.0"
+          output_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0"
+          objects:
+            - {object_id: "nova.finance.subscription_series", name: "Subscription series", description: "A detected recurring charge (in-run)", operations: ["read"], scope_rules: ["requesting user's data only"], schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Deterministic rules; only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/subscription-audit/config@0.1.0", output_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0", constraints: ["read-only", "possible series excluded from totals"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:hub:records:read", "finance:payments:read", "finance:obligations:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 60, max_attempts: 1, rate_limits: [], error_codes: ["insufficient_history"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["independent recomputation equal", "cadence rules hold"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.subscriptions.save_report"
+          name: "Save audit report"
+          description: "Store the verified report under (user, period) or a new version for on-demand runs."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/subscriptions-report", operation: "save_report"}
+          input_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0"
+          output_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0"
+          objects:
+            - {object_id: "nova.finance.audit_report", name: "Audit report", description: "Monthly subscription audit", operations: ["create"], scope_rules: ["requesting user only", "versioned, never overwritten"], schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0", output_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0", constraints: ["verified reports only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:reports:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["report stored"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["exists"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read-back equals delivered numbers"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.fx"
+      name: "Exchange rates"
+      description: "Read the latest verified FX snapshot and its staleness status."
+      intent_examples: []
+      input_schema_ref: "schema://nova/daily-exchange-rates/fx-query@0.1.0"
+      output_schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0"
+      risk_class: "low"
+      preconditions: ["snapshots exist"]
+      postconditions: ["status returned with every snapshot"]
+      tools:
+        - tool_id: "nova.finance.fx.get_rates"
+          name: "Get rates"
+          description: "Latest snapshot with fresh/stale/expired/unverified status, as-of time and source."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/fx-get", operation: "get_rates"}
+          input_schema_ref: "schema://nova/daily-exchange-rates/fx-query@0.1.0"
+          output_schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0"
+          objects:
+            - {object_id: "nova.finance.fx_snapshot", name: "FX snapshot", description: "Daily mid-market rates", operations: ["read"], scope_rules: ["reference data"], schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/daily-exchange-rates/fx-query@0.1.0", output_schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:fx:read"], consent_required: false, grant_ref: null, tenant_binding_required: false}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["no_snapshot"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.advise"
+      name: "Suggestion wording"
+      description: "Turn computed findings into short suggestions without changing any number."
+      intent_examples: []
+      input_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0"
+      output_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0"
+      risk_class: "low"
+      preconditions: ["verified findings"]
+      postconditions: ["every number in text exists in its finding"]
+      tools:
+        - tool_id: "nova.finance.advise.word_suggestions"
+          name: "Word suggestions"
+          description: "One or two sentences per finding; no usage claims; <= 300 characters."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/advise-suggestions", operation: "word_suggestions"}
+          input_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0"
+          output_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0"
+          objects:
+            - {object_id: "nova.finance.audit_finding", name: "Finding", description: "A computed audit finding", operations: ["read"], scope_rules: ["in-run only"], schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0"}
+          variants:
+            - {variant_id: "llm", description: "LLM wording with a number lock", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0", output_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0", constraints: ["number lock", "no account numbers sent"], fallback_variant_id: "template"}
+            - {variant_id: "template", description: "Fixed templates; read-only; same schema", compatible_environments: [], input_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0", output_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0", constraints: [], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["llm:advise"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["finding JSON sent to the LLM provider (llm variant)"], idempotency: "not_applicable", timeout_seconds: 30, max_attempts: 2, rate_limits: ["one call per run"], error_codes: ["number_lock_failed", "provider_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["number lock holds", "no usage claims"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver the monthly digest to the requesting user."
+      intent_examples: []
+      input_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0"
+      output_schema_ref: "schema://nova/subscription-audit/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the digest to the requesting user only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0"
+          output_schema_ref: "schema://nova/subscription-audit/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "The monthly digest", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/subscription-audit/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/subscription-audit/audit-report@0.1.0", output_schema_ref: "schema://nova/subscription-audit/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

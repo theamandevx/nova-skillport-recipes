@@ -1,0 +1,269 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.calendar"
+    name: "Nova — Calendar and meetings"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Reschedule or cancel a booking with approval and guest notification, or add or remove an owner-only busy block."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "MCP"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Calendar store acting as the master busy-store (bookings and busy blocks) with a slot engine"
+        - "External calendar provider reached only through a single propagation point"
+        - "Approval gateway and an owner notification channel"
+        - "Owner's IANA time zone configured"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.calendar.booking"
+      name: "Bookings"
+      description: "Read, reschedule and cancel the owner's bookings."
+      intent_examples: ["move my call with John to Friday 9:30", "cancel tomorrow's intro call"]
+      input_schema_ref: "schema://nova/reschedule-cancel-block-time/request@0.1.0"
+      output_schema_ref: "schema://nova/reschedule-cancel-block-time/booking@0.1.0"
+      risk_class: "high"
+      preconditions: ["owner identified", "explicit owner request"]
+      postconditions: ["booking state equals the approved change"]
+      tools:
+        - tool_id: "nova.calendar.booking.list"
+          name: "List bookings"
+          description: "Find bookings by ID, guest or time (MCP list_bookings / upcoming_bookings)."
+          invocation: {protocol: "MCP", binding_ref: "binding://nova/calendar/list-bookings", operation: "list_bookings"}
+          input_schema_ref: "schema://nova/reschedule-cancel-block-time/booking-query@0.1.0"
+          output_schema_ref: "schema://nova/reschedule-cancel-block-time/booking@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.booking_record", name: "Booking", description: "One meeting on the owner's calendar", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/reschedule-cancel-block-time/booking@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/reschedule-cancel-block-time/booking-query@0.1.0", output_schema_ref: "schema://nova/reschedule-cancel-block-time/booking@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:bookings:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found", "ambiguous"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["exactly one booking per booking ID", "owner's tenant only"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.calendar.booking.reschedule"
+          name: "Reschedule booking"
+          description: "Move a booking keeping its ID and meeting link; the old slot becomes a 'rescheduled' history row; the self-manage token is transferred; the propagation point moves the external event (MCP reschedule_booking)."
+          invocation: {protocol: "MCP", binding_ref: "binding://nova/calendar/reschedule-booking", operation: "reschedule_booking"}
+          input_schema_ref: "schema://nova/reschedule-cancel-block-time/reschedule-input@0.1.0"
+          output_schema_ref: "schema://nova/reschedule-cancel-block-time/booking@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.booking_record", name: "Booking", description: "One meeting on the owner's calendar", operations: ["update", "create"], scope_rules: ["start and end only", "one history row per move", "token transferred, never copied", "booking version must match the approval"], schema_ref: "schema://nova/reschedule-cancel-block-time/booking@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/reschedule-cancel-block-time/reschedule-input@0.1.0", output_schema_ref: "schema://nova/reschedule-cancel-block-time/booking@0.1.0", constraints: ["approval required", "new slot free", "new start not in the past"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:bookings:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["booking moved", "history row created", "external event moved and attendees emailed when send-all"], idempotency: "required", timeout_seconds: 20, max_attempts: 1, rate_limits: ["one run per booking at a time"], error_codes: ["slot_taken", "version_conflict", "past_time", "not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["same booking ID and meeting link", "exactly one live row", "external event ID kept on the live row"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.calendar.booking.cancel"
+          name: "Cancel booking"
+          description: "Set status cancelled and return the external event ID; the propagation point deletes the external event (MCP cancel_booking)."
+          invocation: {protocol: "MCP", binding_ref: "binding://nova/calendar/cancel-booking", operation: "cancel_booking"}
+          input_schema_ref: "schema://nova/reschedule-cancel-block-time/cancel-input@0.1.0"
+          output_schema_ref: "schema://nova/reschedule-cancel-block-time/booking@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.booking_record", name: "Booking", description: "One meeting on the owner's calendar", operations: ["update"], scope_rules: ["status only", "records are never deleted"], schema_ref: "schema://nova/reschedule-cancel-block-time/booking@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/reschedule-cancel-block-time/cancel-input@0.1.0", output_schema_ref: "schema://nova/reschedule-cancel-block-time/booking@0.1.0", constraints: ["approval required"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:bookings:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["booking cancelled", "external event deleted and attendees emailed when send-all"], idempotency: "required", timeout_seconds: 20, max_attempts: 1, rate_limits: ["one run per booking at a time"], error_codes: ["already_cancelled", "version_conflict", "not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status cancelled", "slot freed", "already-cancelled returns current state without a second email"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.calendar.availability"
+      name: "Availability"
+      description: "Free start times and a unified calendar view for conflict checks."
+      intent_examples: ["is Friday 9:30 free"]
+      input_schema_ref: "schema://nova/reschedule-cancel-block-time/slot-query@0.1.0"
+      output_schema_ref: "schema://nova/reschedule-cancel-block-time/slot-list@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner's time zone known"]
+      postconditions: ["slots exclude bookings, blocks and past times"]
+      tools:
+        - tool_id: "nova.calendar.availability.get_slots"
+          name: "Get slots"
+          description: "Free start times for a duration (MCP get_slots)."
+          invocation: {protocol: "MCP", binding_ref: "binding://nova/calendar/get-slots", operation: "get_slots"}
+          input_schema_ref: "schema://nova/reschedule-cancel-block-time/slot-query@0.1.0"
+          output_schema_ref: "schema://nova/reschedule-cancel-block-time/slot-list@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.slot", name: "Slot", description: "A free start time for a duration", operations: ["read"], scope_rules: ["owner's calendar only"], schema_ref: "schema://nova/reschedule-cancel-block-time/slot-list@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Owner agent; minimum notice may be 0; past-time guard always applies; selected here", compatible_environments: [], input_schema_ref: "schema://nova/reschedule-cancel-block-time/slot-query@0.1.0", output_schema_ref: "schema://nova/reschedule-cancel-block-time/slot-list@0.1.0", constraints: ["read-only", "owner only"], fallback_variant_id: null}
+            - {variant_id: "public", description: "External callers; minimum-notice and host overrides stripped server-side; not eligible in this recipe", compatible_environments: [], input_schema_ref: "schema://nova/reschedule-cancel-block-time/slot-query@0.1.0", output_schema_ref: "schema://nova/reschedule-cancel-block-time/slot-list@0.1.0", constraints: ["read-only", "overrides stripped"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:availability:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["invalid_range"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no slot overlaps a booking or block", "no slot in the past"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.calendar.availability.list_calendar"
+          name: "List calendar range"
+          description: "Unified bookings and busy blocks for a half-open range; used for conflict checks."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/calendar/calendar-range", operation: "list_calendar"}
+          input_schema_ref: "schema://nova/reschedule-cancel-block-time/range@0.1.0"
+          output_schema_ref: "schema://nova/reschedule-cancel-block-time/calendar-items@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.busy_block", name: "Busy block", description: "Manual or synced busy time", operations: ["read"], scope_rules: ["owner's calendar only"], schema_ref: "schema://nova/reschedule-cancel-block-time/block@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/reschedule-cancel-block-time/range@0.1.0", output_schema_ref: "schema://nova/reschedule-cancel-block-time/calendar-items@0.1.0", constraints: ["read-only", "half-open ranges"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:availability:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["invalid_range"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["adjacent items are not reported as conflicts"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.calendar.busy_sync"
+      name: "Busy sync status"
+      description: "Report how fresh the synced busy sources are."
+      intent_examples: []
+      input_schema_ref: "schema://nova/reschedule-cancel-block-time/sync-query@0.1.0"
+      output_schema_ref: "schema://nova/reschedule-cancel-block-time/sync-status@0.1.0"
+      risk_class: "low"
+      preconditions: []
+      postconditions: ["last successful sync per source returned"]
+      tools:
+        - tool_id: "nova.calendar.busy_sync.status"
+          name: "Busy sync status"
+          description: "Last successful sync time per source (calendar sync, invite sync)."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/calendar/busy-sync-status", operation: "status"}
+          input_schema_ref: "schema://nova/reschedule-cancel-block-time/sync-query@0.1.0"
+          output_schema_ref: "schema://nova/reschedule-cancel-block-time/sync-status@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.sync_source", name: "Sync source", description: "A busy source and its last sync time", operations: ["read"], scope_rules: ["owner's sources only"], schema_ref: "schema://nova/reschedule-cancel-block-time/sync-status@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/reschedule-cancel-block-time/sync-query@0.1.0", output_schema_ref: "schema://nova/reschedule-cancel-block-time/sync-status@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:availability:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["unknown_source"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["stale is never reported as fresh"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.calendar.blocks"
+      name: "Busy blocks"
+      description: "Add or remove owner-only manual busy blocks; synced blocks are read-only."
+      intent_examples: ["block 2 to 4 tomorrow", "I'm busy Friday 1 to 3"]
+      input_schema_ref: "schema://nova/reschedule-cancel-block-time/range@0.1.0"
+      output_schema_ref: "schema://nova/reschedule-cancel-block-time/block@0.1.0"
+      risk_class: "low"
+      preconditions: ["explicit owner request", "range_start < range_end"]
+      postconditions: ["slots in the range are not offered"]
+      tools:
+        - tool_id: "nova.calendar.blocks.block"
+          name: "Block time"
+          description: "Create a manual busy block (MCP block_time). No third party is notified."
+          invocation: {protocol: "MCP", binding_ref: "binding://nova/calendar/block-time", operation: "block_time"}
+          input_schema_ref: "schema://nova/reschedule-cancel-block-time/range@0.1.0"
+          output_schema_ref: "schema://nova/reschedule-cancel-block-time/block@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.busy_block", name: "Busy block", description: "Manual busy time", operations: ["create"], scope_rules: ["owner only", "reject empty or negative ranges"], schema_ref: "schema://nova/reschedule-cancel-block-time/block@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/reschedule-cancel-block-time/range@0.1.0", output_schema_ref: "schema://nova/reschedule-cancel-block-time/block@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:blocks:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["slots in the range stop being offered"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["empty_range", "invalid_range"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["block visible with exact bounds", "no offered slot overlaps it", "adjacent slot still offered"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.calendar.blocks.unblock"
+          name: "Unblock time"
+          description: "Remove a manual busy block; synced blocks must be removed at their source."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/calendar/unblock-time", operation: "unblock"}
+          input_schema_ref: "schema://nova/reschedule-cancel-block-time/block-ref@0.1.0"
+          output_schema_ref: "schema://nova/reschedule-cancel-block-time/block@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.busy_block", name: "Busy block", description: "Manual busy time", operations: ["delete"], scope_rules: ["source = manual only"], schema_ref: "schema://nova/reschedule-cancel-block-time/block@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/reschedule-cancel-block-time/block-ref@0.1.0", output_schema_ref: "schema://nova/reschedule-cancel-block-time/block@0.1.0", constraints: ["manual blocks only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:blocks:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["slots in the range offered again"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["synced_block", "not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["block absent", "synced blocks untouched"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.calendar.invites"
+      name: "External calendar propagation"
+      description: "Keep the external calendar event in step with the booking, with attendee notifications. Invoked only by the single propagation point."
+      intent_examples: []
+      input_schema_ref: "schema://nova/reschedule-cancel-block-time/push-input@0.1.0"
+      output_schema_ref: "schema://nova/reschedule-cancel-block-time/push-result@0.1.0"
+      risk_class: "high"
+      preconditions: ["approved reschedule or cancel committed"]
+      postconditions: ["exactly one provider request per change"]
+      tools:
+        - tool_id: "nova.calendar.invites.push"
+          name: "Push external event change"
+          description: "Update (move) or delete the external event; the provider emails attendees under send-all."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/calendar/invite-push", operation: "push"}
+          input_schema_ref: "schema://nova/reschedule-cancel-block-time/push-input@0.1.0"
+          output_schema_ref: "schema://nova/reschedule-cancel-block-time/push-result@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.external_event", name: "External calendar event", description: "The provider-side event for one booking (reference only)", operations: ["update", "delete"], scope_rules: ["only the event referenced by the booking", "never called directly by the agent"], schema_ref: "schema://nova/reschedule-cancel-block-time/push-input@0.1.0"}
+          variants:
+            - {variant_id: "send-all", description: "Production: attendees emailed by the provider", compatible_environments: ["production"], input_schema_ref: "schema://nova/reschedule-cancel-block-time/push-input@0.1.0", output_schema_ref: "schema://nova/reschedule-cancel-block-time/push-result@0.1.0", constraints: ["approval states guests will be notified"], fallback_variant_id: null}
+            - {variant_id: "send-none", description: "Tests, sandboxes and owner-approved silent changes; no emails", compatible_environments: ["test", "sandbox", "production"], input_schema_ref: "schema://nova/reschedule-cancel-block-time/push-input@0.1.0", output_schema_ref: "schema://nova/reschedule-cancel-block-time/push-result@0.1.0", constraints: ["never selected silently for a real change"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:external:write (held by the propagation point)"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["external event moved or deleted", "attendees emailed under send-all"], idempotency: "required", timeout_seconds: 20, max_attempts: 1, rate_limits: ["provider limits"], error_codes: ["event_not_found", "provider_error", "auth_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["one request per change", "provider success code or not_applicable"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.approvals.gateway"
+      name: "Approval gateway"
+      description: "Ask the owner to approve one specific action and read the decision."
+      intent_examples: []
+      input_schema_ref: "schema://nova/reschedule-cancel-block-time/approval-request@0.1.0"
+      output_schema_ref: "schema://nova/reschedule-cancel-block-time/approval@0.1.0"
+      risk_class: "medium"
+      preconditions: ["owner channel configured"]
+      postconditions: ["decision bound to one scope hash"]
+      tools:
+        - tool_id: "nova.approvals.gateway.request"
+          name: "Request approval"
+          description: "Send Approve / Deny one-tap token links to the owner."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/approvals/request", operation: "request"}
+          input_schema_ref: "schema://nova/reschedule-cancel-block-time/approval-request@0.1.0"
+          output_schema_ref: "schema://nova/reschedule-cancel-block-time/approval@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One owner decision for one scoped action", operations: ["create"], scope_rules: ["owner only", "single use", "expires"], schema_ref: "schema://nova/reschedule-cancel-block-time/approval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/reschedule-cancel-block-time/approval-request@0.1.0", output_schema_ref: "schema://nova/reschedule-cancel-block-time/approval@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["approvals:request"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["approval message to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 2, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["approval record created with scope hash"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.approvals.gateway.status"
+          name: "Approval status"
+          description: "Return pending, approved, denied or expired."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/approvals/status", operation: "status"}
+          input_schema_ref: "schema://nova/reschedule-cancel-block-time/approval-ref@0.1.0"
+          output_schema_ref: "schema://nova/reschedule-cancel-block-time/approval@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One owner decision for one scoped action", operations: ["read"], scope_rules: ["owner only"], schema_ref: "schema://nova/reschedule-cancel-block-time/approval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/reschedule-cancel-block-time/approval-ref@0.1.0", output_schema_ref: "schema://nova/reschedule-cancel-block-time/approval@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["approvals:request"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["expired approvals never read as approved"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the owner's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/reschedule-cancel-block-time/change-result@0.1.0"
+      output_schema_ref: "schema://nova/reschedule-cancel-block-time/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the result to the owner only, as plain text."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/reschedule-cancel-block-time/change-result@0.1.0"
+          output_schema_ref: "schema://nova/reschedule-cancel-block-time/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the owner", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/reschedule-cancel-block-time/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/reschedule-cancel-block-time/change-result@0.1.0", output_schema_ref: "schema://nova/reschedule-cancel-block-time/delivery@0.1.0", constraints: ["owner only", "plain text"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

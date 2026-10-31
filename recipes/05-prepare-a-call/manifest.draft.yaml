@@ -1,0 +1,215 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.comms"
+    name: "Nova — Calls and messages"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Prepare, approve, place and report one outbound AI voice call."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "MCP"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Telephony account with bidirectional audio streaming and a permitted caller ID"
+        - "Speech-to-text, text-to-speech and tool-calling LLM providers"
+        - "Contact directory and an owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.contacts.directory"
+      name: "Contact directory"
+      description: "Find or save a person's phone number from approved sources."
+      intent_examples: ["call Jane", "what's Jane's number"]
+      input_schema_ref: "schema://nova/prepare-a-call/contact-query@0.1.0"
+      output_schema_ref: "schema://nova/prepare-a-call/contact@0.1.0"
+      risk_class: "medium"
+      preconditions: ["requesting user identified"]
+      postconditions: ["exactly one contact returned, or none"]
+      tools:
+        - tool_id: "nova.contacts.directory.lookup"
+          name: "Look up contact"
+          description: "Search assistant memory, then the contact directory, then ask the user once."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/contacts/lookup", operation: "lookup"}
+          input_schema_ref: "schema://nova/prepare-a-call/contact-query@0.1.0"
+          output_schema_ref: "schema://nova/prepare-a-call/contact@0.1.0"
+          objects:
+            - {object_id: "nova.contacts.contact", name: "Contact", description: "A person and phone number owned by the user", operations: ["read"], scope_rules: ["requesting user's contacts only"], schema_ref: "schema://nova/prepare-a-call/contact@0.1.0"}
+          variants:
+            - {variant_id: "memory", description: "Assistant memory (read-only), tried first", compatible_environments: [], input_schema_ref: "schema://nova/prepare-a-call/contact-query@0.1.0", output_schema_ref: "schema://nova/prepare-a-call/contact@0.1.0", constraints: ["read-only"], fallback_variant_id: "directory"}
+            - {variant_id: "directory", description: "Contact directory (read-only), tried second", compatible_environments: [], input_schema_ref: "schema://nova/prepare-a-call/contact-query@0.1.0", output_schema_ref: "schema://nova/prepare-a-call/contact@0.1.0", constraints: ["read-only"], fallback_variant_id: "ask-user"}
+            - {variant_id: "ask-user", description: "Human-assisted: ask the user once; never guess", compatible_environments: [], input_schema_ref: "schema://nova/prepare-a-call/contact-query@0.1.0", output_schema_ref: "schema://nova/prepare-a-call/contact@0.1.0", constraints: ["one question only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["contacts:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found", "ambiguous", "invalid_number"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["phone_e164 matches ^\\+[1-9][0-9]{7,14}$", "exactly one match"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.contacts.directory.save"
+          name: "Save contact"
+          description: "Save a newly provided number after the user agrees."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/contacts/save", operation: "save"}
+          input_schema_ref: "schema://nova/prepare-a-call/contact@0.1.0"
+          output_schema_ref: "schema://nova/prepare-a-call/contact@0.1.0"
+          objects:
+            - {object_id: "nova.contacts.contact", name: "Contact", description: "A person and phone number owned by the user", operations: ["create"], scope_rules: ["requesting user's contacts only", "no overwrite of an existing number without approval"], schema_ref: "schema://nova/prepare-a-call/contact@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/prepare-a-call/contact@0.1.0", output_schema_ref: "schema://nova/prepare-a-call/contact@0.1.0", constraints: ["user consent required"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["contacts:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["contact record created"], idempotency: "required", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["duplicate", "invalid_number"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["record readable via lookup"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.voice.config"
+      name: "Voice configuration"
+      description: "List selectable voices and whether each provider is ready."
+      intent_examples: ["use a female English voice"]
+      input_schema_ref: "schema://nova/prepare-a-call/voice-query@0.1.0"
+      output_schema_ref: "schema://nova/prepare-a-call/voice-list@0.1.0"
+      risk_class: "low"
+      preconditions: []
+      postconditions: ["each voice carries ready and reason"]
+      tools:
+        - tool_id: "nova.voice.config.list_voices"
+          name: "List voices"
+          description: "Return voices with provider readiness; a not-ready provider is rejected with its reason."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/voice/voices", operation: "list_voices"}
+          input_schema_ref: "schema://nova/prepare-a-call/voice-query@0.1.0"
+          output_schema_ref: "schema://nova/prepare-a-call/voice-list@0.1.0"
+          objects:
+            - {object_id: "nova.voice.voice_profile", name: "Voice profile", description: "A selectable TTS voice", operations: ["read"], scope_rules: [], schema_ref: "schema://nova/prepare-a-call/voice-list@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "One entry per TTS provider; selectable only when ready", compatible_environments: [], input_schema_ref: "schema://nova/prepare-a-call/voice-query@0.1.0", output_schema_ref: "schema://nova/prepare-a-call/voice-list@0.1.0", constraints: ["no silent provider fallback"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["voice:config:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["provider_not_ready"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["ready voices only are selectable"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.voice.call"
+      name: "Outbound AI voice call"
+      description: "Place, monitor and end one outbound call that pursues an approved brief."
+      intent_examples: ["call Jane and confirm Thursday"]
+      input_schema_ref: "schema://nova/prepare-a-call/request@0.1.0"
+      output_schema_ref: "schema://nova/prepare-a-call/call-record@0.1.0"
+      risk_class: "high"
+      preconditions: ["approved brief", "allowlisted country code", "within quiet hours", "cost estimate within cap"]
+      postconditions: ["call record with a truthful final state"]
+      tools:
+        - tool_id: "nova.voice.call.place"
+          name: "Place call"
+          description: "Dial the recipient and run the STT → LLM → TTS conversation pipeline with barge-in, idle hang-up and a duration cap."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/voice/outbound-call", operation: "place"}
+          input_schema_ref: "schema://nova/prepare-a-call/place-input@0.1.0"
+          output_schema_ref: "schema://nova/prepare-a-call/call-record@0.1.0"
+          objects:
+            - {object_id: "nova.voice.call_record", name: "Call", description: "One outbound call", operations: ["create"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/prepare-a-call/call-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Telephony audio stream + STT + tool-calling LLM + TTS; only the default variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/prepare-a-call/place-input@0.1.0", output_schema_ref: "schema://nova/prepare-a-call/call-record@0.1.0", constraints: ["one call per approval", "no automatic redial"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["voice:call:create"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["recipient's phone rings", "provider charges", "recording created when enabled"], idempotency: "required", timeout_seconds: 20, max_attempts: 1, rate_limits: ["1 concurrent call per user"], error_codes: ["provider_rejected", "not_allowlisted", "quiet_hours", "over_budget"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["record exists", "to_e164 equals approved number"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.voice.call.status"
+          name: "Call status"
+          description: "Return queued, ringing, in_progress or ended; queued is never reported as connected."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/voice/call-status", operation: "status"}
+          input_schema_ref: "schema://nova/prepare-a-call/call-ref@0.1.0"
+          output_schema_ref: "schema://nova/prepare-a-call/call-record@0.1.0"
+          objects:
+            - {object_id: "nova.voice.call_record", name: "Call", description: "One outbound call", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/prepare-a-call/call-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/prepare-a-call/call-ref@0.1.0", output_schema_ref: "schema://nova/prepare-a-call/call-record@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["voice:call:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["answered_at set iff connected"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.voice.call.hangup"
+          name: "End call"
+          description: "End a live call immediately."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/voice/hangup", operation: "hangup"}
+          input_schema_ref: "schema://nova/prepare-a-call/call-ref@0.1.0"
+          output_schema_ref: "schema://nova/prepare-a-call/call-record@0.1.0"
+          objects:
+            - {object_id: "nova.voice.call_record", name: "Call", description: "One outbound call", operations: ["update"], scope_rules: ["status, ended_at and end_reason only"], schema_ref: "schema://nova/prepare-a-call/call-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/prepare-a-call/call-ref@0.1.0", output_schema_ref: "schema://nova/prepare-a-call/call-record@0.1.0", constraints: [], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["voice:call:end"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["call ends"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_live"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status becomes ended within 2 s"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.voice.records"
+      name: "Call records"
+      description: "Read a call's record, transcript, recording reference and cost."
+      intent_examples: ["what did Jane say"]
+      input_schema_ref: "schema://nova/prepare-a-call/call-ref@0.1.0"
+      output_schema_ref: "schema://nova/prepare-a-call/call-record@0.1.0"
+      risk_class: "medium"
+      preconditions: ["call ended"]
+      postconditions: ["transcript non-empty when connected"]
+      tools:
+        - tool_id: "nova.voice.records.get"
+          name: "Get call record"
+          description: "Return record, transcript lines, recording reference and cost breakdown."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/voice/records", operation: "get"}
+          input_schema_ref: "schema://nova/prepare-a-call/call-ref@0.1.0"
+          output_schema_ref: "schema://nova/prepare-a-call/call-record@0.1.0"
+          objects:
+            - {object_id: "nova.voice.transcript_line", name: "Transcript line", description: "One utterance in a call", operations: ["read"], scope_rules: ["linked call only"], schema_ref: "schema://nova/prepare-a-call/transcript-line@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/prepare-a-call/call-ref@0.1.0", output_schema_ref: "schema://nova/prepare-a-call/call-record@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["voice:call:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 30, max_attempts: 3, rate_limits: [], error_codes: ["recording_pending"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["line count > 0 when connected"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.voice.recap"
+      name: "Call recap"
+      description: "Summarise a finished call into outcome, bullets and follow-ups."
+      intent_examples: []
+      input_schema_ref: "schema://nova/prepare-a-call/transcript-line@0.1.0"
+      output_schema_ref: "schema://nova/prepare-a-call/recap@0.1.0"
+      risk_class: "low"
+      preconditions: ["transcript available"]
+      postconditions: ["every bullet supported by a transcript line"]
+      tools:
+        - tool_id: "nova.voice.recap.summarise"
+          name: "Summarise call"
+          description: "LLM summary checked against the transcript."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/voice/recap", operation: "summarise"}
+          input_schema_ref: "schema://nova/prepare-a-call/transcript-line@0.1.0"
+          output_schema_ref: "schema://nova/prepare-a-call/recap@0.1.0"
+          objects:
+            - {object_id: "nova.voice.recap", name: "Recap", description: "Structured call outcome", operations: ["create"], scope_rules: ["linked call only"], schema_ref: "schema://nova/prepare-a-call/recap@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/prepare-a-call/transcript-line@0.1.0", output_schema_ref: "schema://nova/prepare-a-call/recap@0.1.0", constraints: [], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["voice:call:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 30, max_attempts: 2, rate_limits: [], error_codes: ["unsupported_claim"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["100% of bullets mapped to transcript lines"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/prepare-a-call/call-result@0.1.0"
+      output_schema_ref: "schema://nova/prepare-a-call/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the result to the requesting user only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/prepare-a-call/call-result@0.1.0"
+          output_schema_ref: "schema://nova/prepare-a-call/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/prepare-a-call/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/prepare-a-call/call-result@0.1.0", output_schema_ref: "schema://nova/prepare-a-call/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

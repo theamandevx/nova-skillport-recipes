@@ -1,0 +1,115 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.finance"
+    name: "Nova — Finance"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Daily, cross-checked, source-attributed exchange-rate snapshots with honest staleness status for conversions."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Two independent HTTPS rate sources configured by the operator (one may need secret_ref://fx-primary)"
+        - "Outbound HTTPS allowed to the two configured hosts only"
+        - "Append-only snapshot store"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.finance.fx"
+      name: "Exchange rates"
+      description: "Fetch, cross-check, store and serve daily mid-market exchange-rate snapshots."
+      intent_examples: ["refresh exchange rates", "what is the EUR rate today"]
+      input_schema_ref: "schema://nova/daily-exchange-rates/config@0.1.0"
+      output_schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0"
+      risk_class: "low"
+      preconditions: ["two independent sources configured"]
+      postconditions: ["append-only snapshot with attribution and cross-check", "status computed honestly"]
+      tools:
+        - tool_id: "nova.finance.fx.fetch_primary"
+          name: "Fetch primary rates"
+          description: "HTTPS GET of the latest rates for the base currency from the primary source."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/finance/fx-primary", operation: "latest_rates"}
+          input_schema_ref: "schema://nova/daily-exchange-rates/config@0.1.0"
+          output_schema_ref: "schema://nova/daily-exchange-rates/provider-rates@0.1.0"
+          objects:
+            - {object_id: "nova.finance.fx_provider_response", name: "Provider response", description: "Parsed rates from one source (transient)", operations: ["read"], scope_rules: ["configured host only", "request carries currency codes only"], schema_ref: "schema://nova/daily-exchange-rates/provider-rates@0.1.0"}
+          variants:
+            - {variant_id: "keyless", description: "Free daily mid-market endpoint without a key; default", compatible_environments: [], input_schema_ref: "schema://nova/daily-exchange-rates/config@0.1.0", output_schema_ref: "schema://nova/daily-exchange-rates/provider-rates@0.1.0", constraints: ["read-only", "provider terms apply"], fallback_variant_id: null}
+            - {variant_id: "keyed", description: "Provider needing secret_ref://fx-primary; operator configuration only", compatible_environments: [], input_schema_ref: "schema://nova/daily-exchange-rates/config@0.1.0", output_schema_ref: "schema://nova/daily-exchange-rates/provider-rates@0.1.0", constraints: ["read-only", "operator configuration only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "none (keyless) or provider API key (keyed)", required_scopes: ["net:egress:fx-sources"], consent_required: false, grant_ref: null, tenant_binding_required: false}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: ["provider terms", "<= 4 manual refreshes/day"], error_codes: ["timeout", "http_error", "invalid_response"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["base matches", "all configured currencies present", "values positive", "timestamp monotonic"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.fx.fetch_secondary"
+          name: "Fetch secondary rates"
+          description: "HTTPS GET of the same currencies from an independent source (different upstream)."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/finance/fx-secondary", operation: "latest_rates"}
+          input_schema_ref: "schema://nova/daily-exchange-rates/config@0.1.0"
+          output_schema_ref: "schema://nova/daily-exchange-rates/provider-rates@0.1.0"
+          objects:
+            - {object_id: "nova.finance.fx_provider_response", name: "Provider response", description: "Parsed rates from one source (transient)", operations: ["read"], scope_rules: ["configured host only"], schema_ref: "schema://nova/daily-exchange-rates/provider-rates@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/daily-exchange-rates/config@0.1.0", output_schema_ref: "schema://nova/daily-exchange-rates/provider-rates@0.1.0", constraints: ["read-only", "must not mirror the primary"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "none or provider API key", required_scopes: ["net:egress:fx-sources"], consent_required: false, grant_ref: null, tenant_binding_required: false}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: ["provider terms"], error_codes: ["timeout", "http_error", "invalid_response"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["structural checks as primary"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.fx.store_snapshot"
+          name: "Store snapshot"
+          description: "Insert an append-only snapshot with rates, attribution, provider time and per-currency cross-check."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/fx-store", operation: "store_snapshot"}
+          input_schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0"
+          output_schema_ref: "schema://nova/daily-exchange-rates/fx-run@0.1.0"
+          objects:
+            - {object_id: "nova.finance.fx_snapshot", name: "FX snapshot", description: "Daily mid-market rates", operations: ["create"], scope_rules: ["append-only", "installation store"], schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Primary rates, cross-checked", compatible_environments: [], input_schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0", output_schema_ref: "schema://nova/daily-exchange-rates/fx-run@0.1.0", constraints: ["append-only"], fallback_variant_id: "secondary-only"}
+            - {variant_id: "secondary-only", description: "Eligible only when the primary failed; stored with status unverified and secondary attribution", compatible_environments: [], input_schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0", output_schema_ref: "schema://nova/daily-exchange-rates/fx-run@0.1.0", constraints: ["append-only", "status always unverified"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:fx:write"], consent_required: false, grant_ref: null, tenant_binding_required: false}
+          execution: {side_effects: ["snapshot stored"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["exists", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["snapshot readable", "rates equal validated values"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.fx.get_rates"
+          name: "Get rates"
+          description: "Return the latest or as-of snapshot with status computed from age and cross-check (fresh, stale, expired, unverified)."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/fx-get", operation: "get_rates"}
+          input_schema_ref: "schema://nova/daily-exchange-rates/fx-query@0.1.0"
+          output_schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0"
+          objects:
+            - {object_id: "nova.finance.fx_snapshot", name: "FX snapshot", description: "Daily mid-market rates", operations: ["read"], scope_rules: ["installation store"], schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/daily-exchange-rates/fx-query@0.1.0", output_schema_ref: "schema://nova/daily-exchange-rates/fx-snapshot@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:fx:read"], consent_required: false, grant_ref: null, tenant_binding_required: false}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["no_snapshot"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status matches recomputation", "round-trip conversion exact to 6 dp"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Send divergence, staleness, expiry and source-failure alerts once per transition."
+      intent_examples: []
+      input_schema_ref: "schema://nova/daily-exchange-rates/fx-run@0.1.0"
+      output_schema_ref: "schema://nova/daily-exchange-rates/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["one alert per transition"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the alert to the requesting user or operator only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/daily-exchange-rates/fx-run@0.1.0"
+          output_schema_ref: "schema://nova/daily-exchange-rates/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "An FX alert", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/daily-exchange-rates/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/daily-exchange-rates/fx-run@0.1.0", output_schema_ref: "schema://nova/daily-exchange-rates/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: ["one per transition"], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

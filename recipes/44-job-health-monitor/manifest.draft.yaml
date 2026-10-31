@@ -1,0 +1,200 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.ops"
+    name: "Nova — Operations"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Auto-discover every recurring job across the automation hub, system timers and the assistant's scheduler every 5 minutes into one registry with honest states."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "organization"
+      prerequisites:
+        - "Read-only access to the automation hub's workflow and execution store"
+        - "Read access to system timer and service properties and the journal"
+        - "Read access to the assistant's job definitions and a private copy of its execution history"
+        - "Optional read access to a database cron history"
+        - "Registry table with a dispatcher function; scheduler running the collector every 5 minutes"
+        - "Owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.jobs.sources"
+      name: "Scheduler sources"
+      description: "Read job definitions and run evidence from each scheduler, read-only."
+      intent_examples: ["is everything running?"]
+      input_schema_ref: "schema://nova/job-health-monitor/cycle-request@0.1.0"
+      output_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0"
+      risk_class: "medium"
+      preconditions: ["read-only handles available"]
+      postconditions: ["per-source job list and evidence, or a source error"]
+      tools:
+        - tool_id: "nova.jobs.sources.discover"
+          name: "Discover jobs"
+          description: "List every recurring job a scheduler knows, with trigger type, enabled flag and expected cadence."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/jobs/source-{variant}", operation: "discover"}
+          input_schema_ref: "schema://nova/job-health-monitor/cycle-request@0.1.0"
+          output_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0"
+          objects:
+            - {object_id: "nova.jobs.scheduler_store", name: "Scheduler store", description: "Workflow store, timer units, assistant job file or database cron table", operations: ["read"], scope_rules: ["read-only open or private copy", "operator's estate only"], schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0"}
+          variants:
+            - {variant_id: "automation-hub", description: "Workflows and executions from the hub's store opened read-only; bounded window queries; error messages decoded from the store's serialisation", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/job-health-monitor/cycle-request@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0", constraints: ["binding binding://nova/jobs/source-automation-hub (UNVERIFIED)", "read-only"], fallback_variant_id: null}
+            - {variant_id: "system-timers", description: "Timer and service properties (enabled, active, sub-state, next elapse) and journal entries", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/job-health-monitor/cycle-request@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0", constraints: ["binding binding://nova/jobs/source-system-timers (UNVERIFIED)", "read-only"], fallback_variant_id: null}
+            - {variant_id: "assistant-scheduler", description: "Assistant job definitions plus a private copy of its execution history, never the live file", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/job-health-monitor/cycle-request@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0", constraints: ["binding binding://nova/jobs/source-assistant-scheduler (UNVERIFIED)", "read-only"], fallback_variant_id: null}
+            - {variant_id: "database-cron", description: "Optional database cron job list and run details", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/job-health-monitor/cycle-request@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0", constraints: ["binding binding://nova/jobs/source-database-cron (UNVERIFIED)", "read-only", "optional"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (collector service identity)", required_scopes: ["jobs:sources:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 2, rate_limits: ["one cycle at a time"], error_codes: ["source_unavailable", "permission_denied", "timeout"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["handle opened read-only", "variants are not fallbacks for each other"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.jobs.sources.collect_runs"
+          name: "Collect run evidence"
+          description: "Return attempts, errors, items, last run, last success, next run, sub-state and a redacted last error for each job in the window."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/jobs/source-{variant}", operation: "collect_runs"}
+          input_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0"
+          output_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0"
+          objects:
+            - {object_id: "nova.jobs.scheduler_store", name: "Scheduler store", description: "Run records for each job", operations: ["read"], scope_rules: ["read-only", "bounded to the failure window", "error field only, no payloads"], schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0"}
+          variants:
+            - {variant_id: "automation-hub", description: "Executions from the hub store (read-only)", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+            - {variant_id: "system-timers", description: "Journal outcomes, one canonical marker per outcome", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0", constraints: ["read-only", "count finished and failed-with-result markers only"], fallback_variant_id: null}
+            - {variant_id: "assistant-scheduler", description: "Execution history from a private copy", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0", constraints: ["read-only", "copy, never the live file"], fallback_variant_id: null}
+            - {variant_id: "database-cron", description: "Database cron run details (optional)", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0", constraints: ["read-only", "optional"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (collector service identity)", required_scopes: ["jobs:sources:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 2, rate_limits: [], error_codes: ["source_unavailable", "unparseable_time", "timeout"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["queries bounded by the window", "error excerpts redacted and at most 300 characters"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.jobs.evaluate"
+      name: "Job state evaluation"
+      description: "Normalise evidence and derive one honest state and reason per job with deterministic rules; challenge each cycle against the previous one."
+      intent_examples: []
+      input_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0"
+      output_schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0"
+      risk_class: "low"
+      preconditions: ["evidence collected"]
+      postconditions: ["every running job has success evidence", "no on-demand job is late"]
+      tools:
+        - tool_id: "nova.jobs.evaluate.derive_state"
+          name: "Derive state"
+          description: "Apply R1-R10 with precedence off_on_purpose, failing, late, not_measured, on_demand, no_work, running; run the cycle-level sanity challenge."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/jobs/evaluate", operation: "derive_state"}
+          input_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0"
+          output_schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0"
+          objects:
+            - {object_id: "nova.jobs.job_state", name: "Job state", description: "Derived state with reason", operations: ["create"], scope_rules: ["in-memory until written by report"], schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Deterministic rules; no LLM; only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/job-health-monitor/source-evidence@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0", constraints: ["failing only when attempts>=1 and successes=0, or error ratio>0.25 with errors>3", "timers judged by scheduler next-run time and sub-state", "on-demand never late", "UTC-normalised timestamps"], fallback_variant_id: null}
+          authorization: {required: false, identity_provider: "TBD", required_scopes: [], consent_required: false, grant_ref: null, tenant_binding_required: false}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 1, rate_limits: [], error_codes: ["rule_error", "source_suspect"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["state reason contains the numbers used", "suspect sources not written"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.jobs.registry"
+      name: "Job registry"
+      description: "One row per job holding definition and live state; staleness applied at read time."
+      intent_examples: ["show me failing jobs", "what is late right now"]
+      input_schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0"
+      output_schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0"
+      risk_class: "low"
+      preconditions: ["registry reachable"]
+      postconditions: ["rows older than 20 minutes display unknown"]
+      tools:
+        - tool_id: "nova.jobs.registry.report"
+          name: "Report states"
+          description: "Upsert live columns for all jobs from ok sources in one transaction; mark vanished jobs present false; human columns untouched."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/jobs/registry", operation: "report"}
+          input_schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0"
+          output_schema_ref: "schema://nova/job-health-monitor/cycle-result@0.1.0"
+          objects:
+            - {object_id: "nova.jobs.job_state", name: "Job state row", description: "Registry row for one job", operations: ["create", "update"], scope_rules: ["live columns only", "collector identity only", "no delete"], schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/cycle-result@0.1.0", constraints: ["single transaction", "upsert by job_id"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (collector service identity)", required_scopes: ["jobs:registry:report"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["registry rows refreshed"], idempotency: "required", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["write_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["rows written equal rows computed", "collected_at equal on all rows"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.jobs.registry.record_cycle"
+          name: "Record cycle"
+          description: "Open a cycle with a single-flight lock and close it with source results, counts, transitions and alerts."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/jobs/registry", operation: "record_cycle"}
+          input_schema_ref: "schema://nova/job-health-monitor/cycle-request@0.1.0"
+          output_schema_ref: "schema://nova/job-health-monitor/cycle-result@0.1.0"
+          objects:
+            - {object_id: "nova.jobs.cycle", name: "Cycle record", description: "One collector cycle", operations: ["create", "update"], scope_rules: ["tenant registry only"], schema_ref: "schema://nova/job-health-monitor/cycle-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/job-health-monitor/cycle-request@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/cycle-result@0.1.0", constraints: ["one cycle at a time", "stale lock takeover after 10 minutes"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (collector service identity)", required_scopes: ["jobs:registry:report"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["cycle record written", "lock taken and released"], idempotency: "required", timeout_seconds: 5, max_attempts: 2, rate_limits: [], error_codes: ["locked"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["counts sum to rows written"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.jobs.registry.list"
+          name: "List jobs"
+          description: "Return rows with display_state, applying the 20-minute staleness rule at read time."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/jobs/registry", operation: "list"}
+          input_schema_ref: "schema://nova/job-health-monitor/read-filter@0.1.0"
+          output_schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0"
+          objects:
+            - {object_id: "nova.jobs.job_state", name: "Job state row", description: "Registry row for one job", operations: ["read"], scope_rules: ["tenant registry only"], schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/job-health-monitor/read-filter@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0", constraints: ["read-only", "never return an empty all-good on error"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["jobs:registry:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["registry_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no row older than 20 minutes displays anything but unknown"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.jobs.registry.summary"
+          name: "Summarise jobs"
+          description: "Counts per display state, stale banner flag and badge colour."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/jobs/registry", operation: "summary"}
+          input_schema_ref: "schema://nova/job-health-monitor/read-filter@0.1.0"
+          output_schema_ref: "schema://nova/job-health-monitor/summary@0.1.0"
+          objects:
+            - {object_id: "nova.jobs.job_state", name: "Job state row", description: "Registry row for one job", operations: ["read"], scope_rules: ["tenant registry only"], schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/job-health-monitor/read-filter@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/summary@0.1.0", constraints: ["read-only", "badge red on any failing, late or unknown"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["jobs:registry:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["registry_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["stale banner set when the latest cycle is older than 20 minutes"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.jobs.registry.set"
+          name: "Set human fields"
+          description: "Human-only update of note, lane and off_on_purpose, with an audit entry."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/jobs/registry", operation: "set"}
+          input_schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0"
+          output_schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0"
+          objects:
+            - {object_id: "nova.jobs.job_state", name: "Job state row", description: "Registry row for one job", operations: ["update"], scope_rules: ["note, lane, off_on_purpose only", "human operators only"], schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/job-state@0.1.0", constraints: ["never called by the collector"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["jobs:registry:set"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["human columns updated"], idempotency: "required", timeout_seconds: 5, max_attempts: 2, rate_limits: [], error_codes: ["forbidden"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["audit entry written"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver state-change alerts to the owner's channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/job-health-monitor/alert@0.1.0"
+      output_schema_ref: "schema://nova/job-health-monitor/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt per alert"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send transition alerts only (never on first observation); more than 10 in a cycle become one summary; send-then-mark."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/job-health-monitor/alert@0.1.0"
+          output_schema_ref: "schema://nova/job-health-monitor/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A state-change alert", operations: ["create"], scope_rules: ["owner channel only", "job names and short reasons only"], schema_ref: "schema://nova/job-health-monitor/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/job-health-monitor/alert@0.1.0", output_schema_ref: "schema://nova/job-health-monitor/delivery@0.1.0", constraints: ["deduplicated by dedupe_key"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["alert delivered to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: ["at most 10 individual alerts per cycle"], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

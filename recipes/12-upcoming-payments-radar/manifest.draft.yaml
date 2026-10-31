@@ -1,0 +1,212 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.finance"
+    name: "Nova — Finance"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Detect future money obligations in connected mailboxes and keep a deduplicated, confidence-scored payment schedule."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Mailbox metadata sync and read-only OAuth consent for each enabled mailbox"
+        - "Operator-approved structured-output LLM provider for email text"
+        - "Obligation store reachable only through audited dispatcher functions"
+        - "Finance-hub account list (read-only)"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.mail.candidates"
+      name: "Candidate message selection"
+      description: "Select unjudged, likely billing messages from the user's connected mailboxes (metadata only)."
+      intent_examples: ["scan my mail for upcoming payments"]
+      input_schema_ref: "schema://nova/upcoming-payments-radar/config@0.1.0"
+      output_schema_ref: "schema://nova/upcoming-payments-radar/message-ref@0.1.0"
+      risk_class: "medium"
+      preconditions: ["radar enabled for the mailbox", "metadata sync healthy"]
+      postconditions: ["no returned message already has an upcoming verdict"]
+      tools:
+        - tool_id: "nova.mail.candidates.list"
+          name: "List candidate messages"
+          description: "Biller-sender or billing-subject-token selector, deduplicated across mailboxes by RFC Message-ID, oldest first, batch-limited."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/candidates", operation: "list_candidates"}
+          input_schema_ref: "schema://nova/upcoming-payments-radar/config@0.1.0"
+          output_schema_ref: "schema://nova/upcoming-payments-radar/message-ref@0.1.0"
+          objects:
+            - {object_id: "nova.mail.message_ref", name: "Message metadata", description: "Sender domain, subject, date and reference of one message", operations: ["read"], scope_rules: ["enabled mailboxes only", "own outbound domains excluded"], schema_ref: "schema://nova/upcoming-payments-radar/message-ref@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/upcoming-payments-radar/config@0.1.0", output_schema_ref: "schema://nova/upcoming-payments-radar/message-ref@0.1.0", constraints: ["read-only", "batch_size <= 20"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:metadata:read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 3, rate_limits: ["mailbox provider limits"], error_codes: ["sync_stale", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no item has an existing verdict", "no item from own_domains"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.mail.body"
+      name: "Transient message body"
+      description: "Read one message body on demand; never persisted."
+      intent_examples: []
+      input_schema_ref: "schema://nova/upcoming-payments-radar/message-ref@0.1.0"
+      output_schema_ref: "schema://nova/upcoming-payments-radar/body-text@0.1.0"
+      risk_class: "medium"
+      preconditions: ["mailbox authorized"]
+      postconditions: ["no body text stored in any table or log"]
+      tools:
+        - tool_id: "nova.mail.body.fetch_transient"
+          name: "Fetch body (transient)"
+          description: "Full-format read, MIME walk, base64url decode, HTML stripped, truncated to 15,000 characters; execution data not saved."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/body-transient", operation: "fetch_body"}
+          input_schema_ref: "schema://nova/upcoming-payments-radar/message-ref@0.1.0"
+          output_schema_ref: "schema://nova/upcoming-payments-radar/body-text@0.1.0"
+          objects:
+            - {object_id: "nova.mail.message_body", name: "Message body", description: "Decoded plain text held in memory for one step", operations: ["read"], scope_rules: ["never persisted", "enabled mailboxes only"], schema_ref: "schema://nova/upcoming-payments-radar/body-text@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/upcoming-payments-radar/message-ref@0.1.0", output_schema_ref: "schema://nova/upcoming-payments-radar/body-text@0.1.0", constraints: ["read-only", "no persistence", "<= 15000 characters"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:body:read_transient"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 3, rate_limits: ["mailbox provider limits"], error_codes: ["gone", "unauthorized", "transient"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["text non-empty", "subject equals metadata subject"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.mail.verdicts"
+      name: "Message verdicts"
+      description: "Remember which messages a pipeline has definitively judged."
+      intent_examples: []
+      input_schema_ref: "schema://nova/upcoming-payments-radar/verdict@0.1.0"
+      output_schema_ref: "schema://nova/upcoming-payments-radar/verdict@0.1.0"
+      risk_class: "low"
+      preconditions: ["definitive outcome reached"]
+      postconditions: ["one verdict per (message_ref, pipeline)"]
+      tools:
+        - tool_id: "nova.mail.verdicts.mark"
+          name: "Mark verdict"
+          description: "Insert a verdict row; transient failures are never marked so they are retried."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/verdicts", operation: "mark"}
+          input_schema_ref: "schema://nova/upcoming-payments-radar/verdict@0.1.0"
+          output_schema_ref: "schema://nova/upcoming-payments-radar/verdict@0.1.0"
+          objects:
+            - {object_id: "nova.mail.verdict", name: "Verdict", description: "Definitive judgement of one message by one pipeline", operations: ["create"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/upcoming-payments-radar/verdict@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/upcoming-payments-radar/verdict@0.1.0", output_schema_ref: "schema://nova/upcoming-payments-radar/verdict@0.1.0", constraints: ["never for deferred items"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:verdicts:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["verdict row created"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["exists"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["row readable by (message_ref, pipeline)"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.extract"
+      name: "Financial extraction"
+      description: "Structured LLM extraction from untrusted message text."
+      intent_examples: []
+      input_schema_ref: "schema://nova/upcoming-payments-radar/body-text@0.1.0"
+      output_schema_ref: "schema://nova/upcoming-payments-radar/extraction@0.1.0"
+      risk_class: "medium"
+      preconditions: ["operator-approved LLM provider"]
+      postconditions: ["schema-valid extraction or a deferral"]
+      tools:
+        - tool_id: "nova.finance.extract.obligation"
+          name: "Extract obligation"
+          description: "Classify the message (alertable, informational, past_event, phishing, promotional, cancellation, payment_confirmation) and extract one obligation with confidence."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/extract-obligation", operation: "extract_obligation"}
+          input_schema_ref: "schema://nova/upcoming-payments-radar/body-text@0.1.0"
+          output_schema_ref: "schema://nova/upcoming-payments-radar/extraction@0.1.0"
+          objects:
+            - {object_id: "nova.finance.extraction", name: "Extraction", description: "Structured reading of one message; not persisted beyond the run except routed fields", operations: ["create"], scope_rules: ["in-run only"], schema_ref: "schema://nova/upcoming-payments-radar/extraction@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Primary structured-output LLM, temperature 0, strict JSON", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/upcoming-payments-radar/body-text@0.1.0", output_schema_ref: "schema://nova/upcoming-payments-radar/extraction@0.1.0", constraints: ["temperature 0", "no runtime provider fallback"], fallback_variant_id: null}
+            - {variant_id: "alternate", description: "Second operator-configured provider with the same schema and data-processing terms; selected by operator configuration only, never as an automatic fallback", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/upcoming-payments-radar/body-text@0.1.0", output_schema_ref: "schema://nova/upcoming-payments-radar/extraction@0.1.0", constraints: ["operator configuration only", "must pass the same fixture set"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["llm:extract"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message text sent to the LLM provider"], idempotency: "not_applicable", timeout_seconds: 45, max_attempts: 2, rate_limits: ["provider limits", "<= batch_size calls per run"], error_codes: ["invalid_json", "provider_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["schema valid", "currency present whenever amount present", "fields supported by the body (S5)"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.obligations"
+      name: "Payment schedule"
+      description: "The user's schedule of upcoming money obligations."
+      intent_examples: ["what bills are coming up"]
+      input_schema_ref: "schema://nova/upcoming-payments-radar/extraction@0.1.0"
+      output_schema_ref: "schema://nova/upcoming-payments-radar/obligation@0.1.0"
+      risk_class: "medium"
+      preconditions: ["write scope granted by enabling the radar"]
+      postconditions: ["at most one obligation per uniq_key", "no receive-direction obligations"]
+      tools:
+        - tool_id: "nova.finance.obligations.apply"
+          name: "Apply extraction"
+          description: "Server-enforced routing and atomic upsert by uniq_key with the earliest-future-cycle rule; exact-match cancellation dismissal; needs-review creation."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/obligations-apply", operation: "apply"}
+          input_schema_ref: "schema://nova/upcoming-payments-radar/extraction@0.1.0"
+          output_schema_ref: "schema://nova/upcoming-payments-radar/obligation@0.1.0"
+          objects:
+            - {object_id: "nova.finance.obligation", name: "Obligation", description: "One upcoming payment obligation", operations: ["create", "update"], scope_rules: ["requesting user's tenant only", "listed fields only", "never re-open a dismissed series", "no delete"], schema_ref: "schema://nova/upcoming-payments-radar/obligation@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Security-definer database function with pinned search path; only the default variant is supported", compatible_environments: ["PostgreSQL-compatible store"], input_schema_ref: "schema://nova/upcoming-payments-radar/extraction@0.1.0", output_schema_ref: "schema://nova/upcoming-payments-radar/obligation@0.1.0", constraints: ["atomic per message", "fuzzy cancellation -> needs_review"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:obligations:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["obligation created or updated", "obligation dismissed on exact cancellation match"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["conflict", "series_dismissed", "unroutable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read-back matches outcome", "unique uniq_key"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.obligations.list"
+          name: "List obligations"
+          description: "Read schedule entries for verification and reporting."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/obligations-list", operation: "list"}
+          input_schema_ref: "schema://nova/upcoming-payments-radar/obligation-query@0.1.0"
+          output_schema_ref: "schema://nova/upcoming-payments-radar/obligation@0.1.0"
+          objects:
+            - {object_id: "nova.finance.obligation", name: "Obligation", description: "One upcoming payment obligation", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/upcoming-payments-radar/obligation@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/upcoming-payments-radar/obligation-query@0.1.0", output_schema_ref: "schema://nova/upcoming-payments-radar/obligation@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:obligations:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["rows belong to the requesting tenant"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.hub"
+      name: "Finance hub accounts"
+      description: "Read the user's finance-hub accounts to suggest a paying account."
+      intent_examples: []
+      input_schema_ref: "schema://nova/upcoming-payments-radar/account-hint@0.1.0"
+      output_schema_ref: "schema://nova/upcoming-payments-radar/account-ref@0.1.0"
+      risk_class: "low"
+      preconditions: ["account list installed"]
+      postconditions: ["suggestion only when currency matches"]
+      tools:
+        - tool_id: "nova.finance.hub.match_account"
+          name: "Match account"
+          description: "Match institution names and last-4 hints; returns high, medium, low or none; currency-gated."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/match-account", operation: "match_account"}
+          input_schema_ref: "schema://nova/upcoming-payments-radar/account-hint@0.1.0"
+          output_schema_ref: "schema://nova/upcoming-payments-radar/account-ref@0.1.0"
+          objects:
+            - {object_id: "nova.finance.account", name: "Account", description: "A finance-hub account (bank, card, cash, e-wallet, loan)", operations: ["read"], scope_rules: ["requesting user only", "masked identifiers only"], schema_ref: "schema://nova/upcoming-payments-radar/account-ref@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/upcoming-payments-radar/account-hint@0.1.0", output_schema_ref: "schema://nova/upcoming-payments-radar/account-ref@0.1.0", constraints: ["read-only", "currency-gated"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:hub:accounts:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["ambiguous", "no_match"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["suggested account currency equals obligation currency"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/upcoming-payments-radar/radar-run@0.1.0"
+      output_schema_ref: "schema://nova/upcoming-payments-radar/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the new needs-review notice to the requesting user only; no amounts in shared channels."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/upcoming-payments-radar/radar-run@0.1.0"
+          output_schema_ref: "schema://nova/upcoming-payments-radar/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/upcoming-payments-radar/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/upcoming-payments-radar/radar-run@0.1.0", output_schema_ref: "schema://nova/upcoming-payments-radar/delivery@0.1.0", constraints: ["owner only", "plain text"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

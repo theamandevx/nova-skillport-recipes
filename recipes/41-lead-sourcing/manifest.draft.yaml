@@ -1,0 +1,238 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.sales"
+    name: "Nova — Sales"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Find prospects from an ideal-customer profile via metasearch, enrich from public websites, verify business emails, and store a list for review; nobody is contacted."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Self-hosted metasearch instance"
+        - "Email-finder and email-verification provider accounts with credit quotas"
+        - "Structured-output LLM provider"
+        - "Sales store with pending-review leads and a suppression list"
+        - "Operator-maintained list of opt-in jurisdictions"
+        - "Owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.research.metasearch"
+      name: "Metasearch"
+      description: "Web discovery through a self-hosted metasearch engine."
+      intent_examples: ["find freight forwarders in the Netherlands"]
+      input_schema_ref: "schema://nova/lead-sourcing/search-query@0.1.0"
+      output_schema_ref: "schema://nova/lead-sourcing/search-results@0.1.0"
+      risk_class: "low"
+      preconditions: ["metasearch instance reachable"]
+      postconditions: ["results carry URL and title"]
+      tools:
+        - tool_id: "nova.research.metasearch.search"
+          name: "Search"
+          description: "Run one query and return result URLs, titles and snippets."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/research/metasearch", operation: "search"}
+          input_schema_ref: "schema://nova/lead-sourcing/search-query@0.1.0"
+          output_schema_ref: "schema://nova/lead-sourcing/search-results@0.1.0"
+          objects:
+            - {object_id: "nova.research.search_result", name: "Search result", description: "A public web result", operations: ["read"], scope_rules: ["public web only"], schema_ref: "schema://nova/lead-sourcing/search-results@0.1.0"}
+          variants:
+            - {variant_id: "self-hosted", description: "Self-hosted metasearch instance; no API key; only this variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/lead-sourcing/search-query@0.1.0", output_schema_ref: "schema://nova/lead-sourcing/search-results@0.1.0", constraints: ["read-only", "at most 3 result pages per query"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["research:search"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["query sent to public search engines through the instance"], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 3, rate_limits: ["instance limits"], error_codes: ["unreachable", "no_results"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["results parse to the schema"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.web.fetch"
+      name: "Polite web fetch"
+      description: "Retrieve public pages honouring robots rules and per-host rate limits."
+      intent_examples: []
+      input_schema_ref: "schema://nova/lead-sourcing/fetch-request@0.1.0"
+      output_schema_ref: "schema://nova/lead-sourcing/page@0.1.0"
+      risk_class: "low"
+      preconditions: ["robots rules allow the page"]
+      postconditions: ["page status recorded with fetch time"]
+      tools:
+        - tool_id: "nova.web.fetch.page"
+          name: "Fetch page"
+          description: "Plain HTTP fetch of one public page with an identifying user agent; no login, paywall, CAPTCHA solving or JavaScript rendering."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/web/fetch", operation: "page"}
+          input_schema_ref: "schema://nova/lead-sourcing/fetch-request@0.1.0"
+          output_schema_ref: "schema://nova/lead-sourcing/page@0.1.0"
+          objects:
+            - {object_id: "nova.web.page", name: "Web page", description: "Text of a public page", operations: ["read"], scope_rules: ["public pages only", "robots rules honoured"], schema_ref: "schema://nova/lead-sourcing/page@0.1.0"}
+          variants:
+            - {variant_id: "static", description: "Static HTTP fetch; only this variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/lead-sourcing/fetch-request@0.1.0", output_schema_ref: "schema://nova/lead-sourcing/page@0.1.0", constraints: ["1 request per host per 5 seconds", "no JavaScript rendering"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["web:fetch:public"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 3, rate_limits: ["1 request per host per 5 seconds"], error_codes: ["robots_disallowed", "not_readable", "not_found", "blocked"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["robots rules checked before fetch"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.sales.enrich"
+      name: "Firmographic enrichment"
+      description: "Extract company facts with evidence quotes and score ICP fit."
+      intent_examples: []
+      input_schema_ref: "schema://nova/lead-sourcing/enrich-request@0.1.0"
+      output_schema_ref: "schema://nova/lead-sourcing/firmographics@0.1.0"
+      risk_class: "medium"
+      preconditions: ["at least one page fetched"]
+      postconditions: ["every fact has an evidence quote found in the page text"]
+      tools:
+        - tool_id: "nova.sales.enrich.firmographics"
+          name: "Extract firmographics"
+          description: "Structured-output LLM, temperature 0; page text is untrusted data; facts without evidence are dropped."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/enrich", operation: "firmographics"}
+          input_schema_ref: "schema://nova/lead-sourcing/enrich-request@0.1.0"
+          output_schema_ref: "schema://nova/lead-sourcing/firmographics@0.1.0"
+          objects:
+            - {object_id: "nova.sales.firmographics", name: "Firmographics", description: "Company facts and fit score", operations: ["create"], scope_rules: ["in memory until stored for review"], schema_ref: "schema://nova/lead-sourcing/firmographics@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/lead-sourcing/enrich-request@0.1.0", output_schema_ref: "schema://nova/lead-sourcing/firmographics@0.1.0", constraints: ["evidence quote required per fact"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:enrich"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["page text sent to the LLM provider"], idempotency: "not_applicable", timeout_seconds: 90, max_attempts: 2, rate_limits: ["token cap per run TBD"], error_codes: ["llm_error", "not_company_site"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["evidence quotes found verbatim in fetched text"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.email.discovery"
+      name: "Email discovery"
+      description: "Find business contacts for a company domain through an email-finder provider."
+      intent_examples: []
+      input_schema_ref: "schema://nova/lead-sourcing/domain-query@0.1.0"
+      output_schema_ref: "schema://nova/lead-sourcing/domain-contacts@0.1.0"
+      risk_class: "medium"
+      preconditions: ["domain-search credits left"]
+      postconditions: ["every address at the company domain"]
+      tools:
+        - tool_id: "nova.email.discovery.domain_search"
+          name: "Domain search"
+          description: "Metered provider call returning named contacts and generic addresses at a domain."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/email/domain-search", operation: "domain_search"}
+          input_schema_ref: "schema://nova/lead-sourcing/domain-query@0.1.0"
+          output_schema_ref: "schema://nova/lead-sourcing/domain-contacts@0.1.0"
+          objects:
+            - {object_id: "nova.sales.contact_candidate", name: "Contact candidate", description: "A business contact at a company", operations: ["read"], scope_rules: ["business contact data only"], schema_ref: "schema://nova/lead-sourcing/domain-contacts@0.1.0"}
+          variants:
+            - {variant_id: "provider-api", description: "Email-finder provider domain search; only this variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/lead-sourcing/domain-query@0.1.0", output_schema_ref: "schema://nova/lead-sourcing/domain-contacts@0.1.0", constraints: ["no social-network scraping", "no unverified pattern guessing"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["email:discovery:search"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["provider credit spent", "domain sent to the provider"], idempotency: "recommended", timeout_seconds: 20, max_attempts: 2, rate_limits: ["monthly quota", "per-run credit cap TBD"], error_codes: ["quota_exhausted", "provider_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["credits used counted", "addresses at the company domain"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.email.verify"
+      name: "Email verification"
+      description: "Check deliverability of a candidate address through a verification provider."
+      intent_examples: []
+      input_schema_ref: "schema://nova/lead-sourcing/verify-request@0.1.0"
+      output_schema_ref: "schema://nova/lead-sourcing/verify-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["verification credits left", "address not suppressed"]
+      postconditions: ["status is valid, accept_all, invalid or unknown"]
+      tools:
+        - tool_id: "nova.email.verify.check"
+          name: "Verify address"
+          description: "Metered provider call; results cached for 30 days."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/email/verify", operation: "check"}
+          input_schema_ref: "schema://nova/lead-sourcing/verify-request@0.1.0"
+          output_schema_ref: "schema://nova/lead-sourcing/verify-result@0.1.0"
+          objects:
+            - {object_id: "nova.sales.contact_candidate", name: "Contact candidate", description: "A business contact at a company", operations: ["read"], scope_rules: ["one address per call"], schema_ref: "schema://nova/lead-sourcing/verify-result@0.1.0"}
+          variants:
+            - {variant_id: "provider-api", description: "Verification provider; only this variant is supported; SMTP probing from own infrastructure excluded", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/lead-sourcing/verify-request@0.1.0", output_schema_ref: "schema://nova/lead-sourcing/verify-result@0.1.0", constraints: ["one retry on transient error only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["email:verify:check"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["provider credit spent", "address sent to the provider"], idempotency: "recommended", timeout_seconds: 20, max_attempts: 2, rate_limits: ["monthly quota", "per-run credit cap TBD"], error_codes: ["quota_exhausted", "provider_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no invalid address stored"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.sales.sourcing"
+      name: "Sourcing control and review storage"
+      description: "Quotas, review storage of pending leads and the review list."
+      intent_examples: ["how many lookups do I have left"]
+      input_schema_ref: "schema://nova/lead-sourcing/icp-request@0.1.0"
+      output_schema_ref: "schema://nova/lead-sourcing/review-list@0.1.0"
+      risk_class: "medium"
+      preconditions: ["sales store reachable"]
+      postconditions: ["stored leads pending and not contactable"]
+      tools:
+        - tool_id: "nova.sales.sourcing.quota_status"
+          name: "Quota status"
+          description: "Remaining provider credits and LLM budget for the period."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/sourcing-quota", operation: "quota_status"}
+          input_schema_ref: "schema://nova/lead-sourcing/quota-query@0.1.0"
+          output_schema_ref: "schema://nova/lead-sourcing/quota@0.1.0"
+          objects:
+            - {object_id: "nova.sales.quota", name: "Quota", description: "Provider credit counters", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/lead-sourcing/quota@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/lead-sourcing/quota-query@0.1.0", output_schema_ref: "schema://nova/lead-sourcing/quota@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:sourcing:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["counters returned with reset date"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.sales.sourcing.store_for_review"
+          name: "Store for review"
+          description: "Create or update pending sourced leads deduplicated by domain and email; reviewed leads skipped."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/store-for-review", operation: "store_for_review"}
+          input_schema_ref: "schema://nova/lead-sourcing/review-lead@0.1.0"
+          output_schema_ref: "schema://nova/lead-sourcing/store-result@0.1.0"
+          objects:
+            - {object_id: "nova.sales.lead", name: "Lead", description: "A sourced prospect awaiting review", operations: ["create", "update"], scope_rules: ["review_status pending only", "contactable false only", "enrichment fields of pending leads only"], schema_ref: "schema://nova/lead-sourcing/review-lead@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/lead-sourcing/review-lead@0.1.0", output_schema_ref: "schema://nova/lead-sourcing/store-result@0.1.0", constraints: ["never sets contactable", "never touches reviewed leads"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:sourcing:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["pending leads stored"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every stored lead pending and not contactable"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.sales.suppression"
+      name: "Suppression and dedupe check"
+      description: "Opt-outs, do-not-contact entries and existing leads."
+      intent_examples: []
+      input_schema_ref: "schema://nova/lead-sourcing/suppression-query@0.1.0"
+      output_schema_ref: "schema://nova/lead-sourcing/suppression-result@0.1.0"
+      risk_class: "medium"
+      preconditions: []
+      postconditions: ["suppressed and existing entries excluded"]
+      tools:
+        - tool_id: "nova.sales.suppression.check"
+          name: "Check suppression"
+          description: "Return whether an address or domain is suppressed or already a lead."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/suppression-check", operation: "check"}
+          input_schema_ref: "schema://nova/lead-sourcing/suppression-query@0.1.0"
+          output_schema_ref: "schema://nova/lead-sourcing/suppression-result@0.1.0"
+          objects:
+            - {object_id: "nova.sales.suppression_entry", name: "Suppression entry", description: "A do-not-contact record", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/lead-sourcing/suppression-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/lead-sourcing/suppression-query@0.1.0", output_schema_ref: "schema://nova/lead-sourcing/suppression-result@0.1.0", constraints: ["read-only", "unavailable means blocked"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:suppression:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["suppressed domains never pass"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Tell the owner the review list is ready."
+      intent_examples: []
+      input_schema_ref: "schema://nova/lead-sourcing/owner-note@0.1.0"
+      output_schema_ref: "schema://nova/lead-sourcing/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send one plain-text note to the owner only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/lead-sourcing/owner-note@0.1.0"
+          output_schema_ref: "schema://nova/lead-sourcing/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the owner", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/lead-sourcing/owner-note@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/lead-sourcing/owner-note@0.1.0", output_schema_ref: "schema://nova/lead-sourcing/delivery@0.1.0", constraints: ["owner only", "plain text"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

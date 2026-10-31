@@ -1,0 +1,111 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.calendar"
+    name: "Nova — Calendar and meetings"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Send the user one read-only evening reminder of open action items from their meeting minutes."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "MCP"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Minutes store with owner-tagged action items (recipe 25 contracts)"
+        - "Append-only nudge log"
+        - "Owner notification channel accepting plain text"
+        - "Runtime scheduler able to fire per user at a local time (binding TBD)"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.minutes.store"
+      name: "Minutes store"
+      description: "Read minutes sessions and their open action items; this recipe requests no write access."
+      intent_examples: ["what do I still owe from my meetings"]
+      input_schema_ref: "schema://nova/action-item-follow-ups/config@0.1.0"
+      output_schema_ref: "schema://nova/action-item-follow-ups/action-item@0.1.0"
+      risk_class: "medium"
+      preconditions: ["user's tenant resolved"]
+      postconditions: ["only the user's tenant returned"]
+      tools:
+        - tool_id: "nova.minutes.store.list_open_actions"
+          name: "List open action items"
+          description: "Return open action items from the user's minutes within a lookback window, plus a count of older open items."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/minutes/open-actions", operation: "list_open_actions"}
+          input_schema_ref: "schema://nova/action-item-follow-ups/config@0.1.0"
+          output_schema_ref: "schema://nova/action-item-follow-ups/action-item@0.1.0"
+          objects:
+            - {object_id: "nova.minutes.action_item", name: "Action item", description: "A task from a minutes session with owner, optional due date and confidence", operations: ["read"], scope_rules: ["user's tenant only", "status open only", "within lookback_days"], schema_ref: "schema://nova/action-item-follow-ups/action-item@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/action-item-follow-ups/config@0.1.0", output_schema_ref: "schema://nova/action-item-follow-ups/action-item@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["minutes:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable", "schema_invalid"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every item in the user's tenant", "every item status open"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.minutes.store.get"
+          name: "Get minutes"
+          description: "Read one minutes session to confirm an item still exists, is open, and to build its link."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/minutes/store-get", operation: "get"}
+          input_schema_ref: "schema://nova/action-item-follow-ups/minutes-ref@0.1.0"
+          output_schema_ref: "schema://nova/action-item-follow-ups/minutes-ref@0.1.0"
+          objects:
+            - {object_id: "nova.minutes.session", name: "Minutes session", description: "Stored minutes for one meeting", operations: ["read"], scope_rules: ["user's tenant only"], schema_ref: "schema://nova/action-item-follow-ups/minutes-ref@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/action-item-follow-ups/minutes-ref@0.1.0", output_schema_ref: "schema://nova/action-item-follow-ups/minutes-ref@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["minutes:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["item present and open in the session"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.minutes.followups"
+      name: "Follow-up nudge log"
+      description: "Append-only record of reminders claimed, sent or skipped, used to send at most one reminder per user per local date."
+      intent_examples: []
+      input_schema_ref: "schema://nova/action-item-follow-ups/nudge@0.1.0"
+      output_schema_ref: "schema://nova/action-item-follow-ups/nudge@0.1.0"
+      risk_class: "low"
+      preconditions: ["user identified", "local date computed in the user's time zone"]
+      postconditions: ["one claimed and at most one outcome entry per user and local date"]
+      tools:
+        - tool_id: "nova.minutes.followups.record_nudge"
+          name: "Record nudge"
+          description: "Conditional append keyed by user, local date and kind; on conflict it returns the existing entries instead of writing."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/minutes/nudge-log", operation: "record_nudge"}
+          input_schema_ref: "schema://nova/action-item-follow-ups/nudge@0.1.0"
+          output_schema_ref: "schema://nova/action-item-follow-ups/nudge@0.1.0"
+          objects:
+            - {object_id: "nova.minutes.nudge_entry", name: "Nudge log entry", description: "claimed, sent, skipped_empty, skipped_other or failed for one user and local date; item IDs only, no task text", operations: ["create"], scope_rules: ["requesting user only", "append-only: never updated or deleted by this recipe"], schema_ref: "schema://nova/action-item-follow-ups/nudge@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/action-item-follow-ups/nudge@0.1.0", output_schema_ref: "schema://nova/action-item-follow-ups/nudge@0.1.0", constraints: ["append-only", "conditional on key"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["followups:append"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["nudge entry appended"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["conflict_existing_entries", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["conflict replay returns the same entries", "at most one sent entry per user and local date"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/action-item-follow-ups/digest@0.1.0"
+      output_schema_ref: "schema://nova/action-item-follow-ups/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured", "outside quiet hours"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the evening reminder to the user only, as plain text with no markdown parse mode."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/action-item-follow-ups/digest@0.1.0"
+          output_schema_ref: "schema://nova/action-item-follow-ups/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only", "never an action-item owner or attendee"], schema_ref: "schema://nova/action-item-follow-ups/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/action-item-follow-ups/digest@0.1.0", output_schema_ref: "schema://nova/action-item-follow-ups/delivery@0.1.0", constraints: ["owner only", "plain text", "max 3,500 characters"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: ["1 reminder per user per local date"], error_codes: ["channel_unavailable", "text_rejected"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received", "recipient equals the configured owner channel"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

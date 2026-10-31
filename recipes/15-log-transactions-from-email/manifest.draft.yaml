@@ -1,0 +1,283 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.finance"
+    name: "Nova — Finance"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Log transactions from bank and card emails to the finance hub on a high-confidence account match inside a standing approval; everything else goes to a review queue."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Mailbox metadata sync and read-only OAuth consent per mailbox"
+        - "Operator-approved structured-output LLM provider"
+        - "Finance hub with accounts, match hints (last-4 for multi-account institutions), records and review queue"
+        - "Authorized connection to the user's external personal-finance app over REST"
+        - "Standing auto-log approval naming accounts and per-transaction caps (may be empty = review-only)"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.mail.candidates"
+      name: "Candidate message selection"
+      description: "Select unjudged transaction messages from connected mailboxes."
+      intent_examples: ["check my mail for transactions"]
+      input_schema_ref: "schema://nova/log-transactions-from-email/config@0.1.0"
+      output_schema_ref: "schema://nova/log-transactions-from-email/message-ref@0.1.0"
+      risk_class: "medium"
+      preconditions: ["recipe enabled for the mailbox"]
+      postconditions: ["no returned message already has a txn verdict"]
+      tools:
+        - tool_id: "nova.mail.candidates.list"
+          name: "List candidate messages"
+          description: "Institution-sender or transaction-subject-token selector, deduplicated by RFC Message-ID."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/candidates", operation: "list_candidates"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/config@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/message-ref@0.1.0"
+          objects:
+            - {object_id: "nova.mail.message_ref", name: "Message metadata", description: "Sender domain, subject, date and reference", operations: ["read"], scope_rules: ["enabled mailboxes only"], schema_ref: "schema://nova/log-transactions-from-email/message-ref@0.1.0"}
+          variants:
+            - {variant_id: "txn", description: "Transaction selector; only this variant is used by this recipe", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-email/config@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/message-ref@0.1.0", constraints: ["read-only", "batch_size <= 20"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:metadata:read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 3, rate_limits: ["mailbox provider limits"], error_codes: ["sync_stale", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no item has an existing txn verdict"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.mail.body"
+      name: "Transient message body"
+      description: "Read one message body on demand; never persisted."
+      intent_examples: []
+      input_schema_ref: "schema://nova/log-transactions-from-email/message-ref@0.1.0"
+      output_schema_ref: "schema://nova/log-transactions-from-email/body-text@0.1.0"
+      risk_class: "medium"
+      preconditions: ["mailbox authorized"]
+      postconditions: ["no body text stored"]
+      tools:
+        - tool_id: "nova.mail.body.fetch_transient"
+          name: "Fetch body (transient)"
+          description: "Full-format read, decode, HTML stripped, <= 15,000 characters; execution data not saved."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/body-transient", operation: "fetch_body"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/message-ref@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/body-text@0.1.0"
+          objects:
+            - {object_id: "nova.mail.message_body", name: "Message body", description: "Decoded text held in memory", operations: ["read"], scope_rules: ["never persisted"], schema_ref: "schema://nova/log-transactions-from-email/body-text@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-email/message-ref@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/body-text@0.1.0", constraints: ["read-only", "no persistence"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:body:read_transient"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 3, rate_limits: ["mailbox provider limits"], error_codes: ["gone", "unauthorized", "transient"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["text non-empty", "subject matches metadata"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.mail.verdicts"
+      name: "Message verdicts"
+      description: "Remember messages the txn pipeline has definitively judged."
+      intent_examples: []
+      input_schema_ref: "schema://nova/log-transactions-from-email/verdict@0.1.0"
+      output_schema_ref: "schema://nova/log-transactions-from-email/verdict@0.1.0"
+      risk_class: "low"
+      preconditions: ["definitive outcome"]
+      postconditions: ["one verdict per (message_ref, pipeline)"]
+      tools:
+        - tool_id: "nova.mail.verdicts.mark"
+          name: "Mark verdict"
+          description: "Insert a verdict row (normally inside the router transaction); never for deferred items."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/verdicts", operation: "mark"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/verdict@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/verdict@0.1.0"
+          objects:
+            - {object_id: "nova.mail.verdict", name: "Verdict", description: "Definitive judgement of one message", operations: ["create"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/log-transactions-from-email/verdict@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-email/verdict@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/verdict@0.1.0", constraints: ["never for deferred items"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:verdicts:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["verdict row created"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["exists"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["row readable"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.extract"
+      name: "Financial extraction"
+      description: "Structured LLM extraction of a transaction from untrusted message text."
+      intent_examples: []
+      input_schema_ref: "schema://nova/log-transactions-from-email/body-text@0.1.0"
+      output_schema_ref: "schema://nova/log-transactions-from-email/extraction@0.1.0"
+      risk_class: "medium"
+      preconditions: ["operator-approved LLM provider"]
+      postconditions: ["schema-valid extraction or a deferral"]
+      tools:
+        - tool_id: "nova.finance.extract.transaction"
+          name: "Extract transaction"
+          description: "Return is_transaction, direction, amount, currency, date, counterparty, account hint, reference, credited_to, category, confidence, skip_reason."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/extract-transaction", operation: "extract_transaction"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/body-text@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/extraction@0.1.0"
+          objects:
+            - {object_id: "nova.finance.extraction", name: "Extraction", description: "Structured reading of one message", operations: ["create"], scope_rules: ["in-run only"], schema_ref: "schema://nova/log-transactions-from-email/extraction@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Primary structured-output LLM, temperature 0", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/log-transactions-from-email/body-text@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/extraction@0.1.0", constraints: ["no runtime provider fallback"], fallback_variant_id: null}
+            - {variant_id: "alternate", description: "Second provider; operator configuration only; same schema and data terms", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/log-transactions-from-email/body-text@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/extraction@0.1.0", constraints: ["operator configuration only", "must pass the fixture set"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["llm:extract"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message text sent to the LLM provider"], idempotency: "not_applicable", timeout_seconds: 45, max_attempts: 2, rate_limits: ["<= batch_size calls per run"], error_codes: ["invalid_json", "provider_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["schema valid", "money fields supported by the body"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.hub"
+      name: "Finance hub"
+      description: "Accounts, duplicate detection and the atomic transaction router."
+      intent_examples: []
+      input_schema_ref: "schema://nova/log-transactions-from-email/extraction@0.1.0"
+      output_schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0"
+      risk_class: "high"
+      preconditions: ["accounts configured", "standing approval loaded"]
+      postconditions: ["unique (source_type, source_ref)", "auto-logged records satisfy the gate"]
+      tools:
+        - tool_id: "nova.finance.hub.match_account"
+          name: "Match account"
+          description: "Institution keyword and last-4 hints; currency-gated; multi-account institutions need last-4 for high."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/match-account", operation: "match_account"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/account-hint@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/account-ref@0.1.0"
+          objects:
+            - {object_id: "nova.finance.account", name: "Account", description: "A finance-hub account", operations: ["read"], scope_rules: ["requesting user only", "masked identifiers"], schema_ref: "schema://nova/log-transactions-from-email/account-ref@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-email/account-hint@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/account-ref@0.1.0", constraints: ["read-only", "currency-gated"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:hub:accounts:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["ambiguous", "no_match"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["high match is unique and currency-equal"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.hub.find_duplicate"
+          name: "Find duplicate"
+          description: "Manual record with same account, direction and exact amount within +/-3 days; or any record with the same normalised reference."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/find-duplicate", operation: "find_duplicate"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/dup-query@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/dup-result@0.1.0"
+          objects:
+            - {object_id: "nova.finance.hub_record", name: "Hub record", description: "A logged transaction", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-email/dup-query@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/dup-result@0.1.0", constraints: ["read-only", "window fixed at 3 days"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:hub:records:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["multiple"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["matched record belongs to tenant"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.hub.route_transaction"
+          name: "Route transaction"
+          description: "Server-enforced gate; atomically stage a pending record, add a review item, or reconcile, plus the verdict."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/route-transaction", operation: "route_transaction"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/route-input@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/route-result@0.1.0"
+          objects:
+            - {object_id: "nova.finance.hub_record", name: "Hub record", description: "A logged transaction", operations: ["create"], scope_rules: ["opted-in accounts only for auto-log", "<= per-currency cap", "unique (source_type, source_ref)"], schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0"}
+            - {object_id: "nova.finance.review_item", name: "Review item", description: "A transaction awaiting approval", operations: ["create"], scope_rules: ["unique source_ref"], schema_ref: "schema://nova/log-transactions-from-email/review-item@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Security-definer database function; only the default variant is supported", compatible_environments: ["PostgreSQL-compatible store"], input_schema_ref: "schema://nova/log-transactions-from-email/route-input@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/route-result@0.1.0", constraints: ["recomputes the gate server-side", "atomic with verdict"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:hub:records:write", "finance:review:write", "mail:verdicts:write"], consent_required: true, grant_ref: "standing auto-log approval (approval_id)", tenant_binding_required: true}
+          execution: {side_effects: ["pending record created", "review item created", "verdict written"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["exists", "gate_mismatch", "approval_expired"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["outcome matches read-back", "auto-logged record satisfies every gate condition"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.hub_sync"
+      name: "External app sync"
+      description: "Mirror staged hub records to the user's external personal-finance app over REST exactly once."
+      intent_examples: []
+      input_schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0"
+      output_schema_ref: "schema://nova/log-transactions-from-email/push-result@0.1.0"
+      risk_class: "high"
+      preconditions: ["external app connection authorized"]
+      postconditions: ["pushed only with a remote ID", "no blind re-POST of pushing rows"]
+      tools:
+        - tool_id: "nova.finance.hub_sync.push_batch"
+          name: "Push batch"
+          description: "Claim pending -> pushing (skip-locked), POST <= 20 records, resolve per input index (success / validation / conflict or rate-limit / 5xx)."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/finance/hub-push", operation: "create_records"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/push-result@0.1.0"
+          objects:
+            - {object_id: "nova.finance.hub_record", name: "Hub record", description: "A logged transaction", operations: ["update"], scope_rules: ["fields: sync_status, remote_id, claimed_at, error"], schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0"}
+            - {object_id: "nova.external_finance_app.record", name: "External app record", description: "The mirrored record in the user's external app", operations: ["create"], scope_rules: ["user's own external account only"], schema_ref: "schema://nova/log-transactions-from-email/push-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["TBD provider API version"], input_schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/push-result@0.1.0", constraints: ["<= 20 per call", "pending rows only", "exact decimal conversion"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["external_finance_app:records:create"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["records created in the external app"], idempotency: "required", timeout_seconds: 30, max_attempts: 1, rate_limits: ["provider rate limit TBD", "honour Retry-After"], error_codes: ["validation_error", "conflict", "rate_limited", "server_error", "unauthorized"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["pushed count equals per-item successes", "remote IDs non-null"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.hub_sync.verify_remote"
+          name: "Verify remote"
+          description: "Look up a stale pushing record in the external app (by source marker, account, date and amount) before any re-push."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/finance/hub-verify", operation: "find_record"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/push-result@0.1.0"
+          objects:
+            - {object_id: "nova.external_finance_app.record", name: "External app record", description: "The mirrored record", operations: ["read"], scope_rules: ["user's own external account only"], schema_ref: "schema://nova/log-transactions-from-email/push-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["TBD provider API version"], input_schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/push-result@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["external_finance_app:records:read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: ["provider rate limit TBD"], error_codes: ["not_found", "ambiguous"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["found -> pushed with remote ID; not found -> pending"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.review"
+      name: "Review queue"
+      description: "Let the user approve (to a chosen account) or reject uncertain transactions."
+      intent_examples: ["show transactions waiting for review"]
+      input_schema_ref: "schema://nova/log-transactions-from-email/review-decision@0.1.0"
+      output_schema_ref: "schema://nova/log-transactions-from-email/review-item@0.1.0"
+      risk_class: "medium"
+      preconditions: ["pending review item"]
+      postconditions: ["approved items logged once with source_type review"]
+      tools:
+        - tool_id: "nova.finance.review.approve"
+          name: "Approve review item"
+          description: "Log the item to the account the user selects; mark approved with the record ID."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/review-approve", operation: "approve"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/review-decision@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/review-item@0.1.0"
+          objects:
+            - {object_id: "nova.finance.review_item", name: "Review item", description: "A transaction awaiting approval", operations: ["update"], scope_rules: ["fields: status, resolved_account_ref, record_id"], schema_ref: "schema://nova/log-transactions-from-email/review-item@0.1.0"}
+            - {object_id: "nova.finance.hub_record", name: "Hub record", description: "A logged transaction", operations: ["create"], scope_rules: ["source_type review", "unique source_ref"], schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-email/review-decision@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/review-item@0.1.0", constraints: ["explicit user action per item"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:review:write", "finance:hub:records:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["record created", "review item approved"], idempotency: "required", timeout_seconds: 15, max_attempts: 2, rate_limits: [], error_codes: ["not_pending", "account_currency_mismatch"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["record exists once", "item approved with record_id"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.review.reject"
+          name: "Reject review item"
+          description: "Close the item without logging."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/review-reject", operation: "reject"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/review-decision@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/review-item@0.1.0"
+          objects:
+            - {object_id: "nova.finance.review_item", name: "Review item", description: "A transaction awaiting approval", operations: ["update"], scope_rules: ["field: status"], schema_ref: "schema://nova/log-transactions-from-email/review-item@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-email/review-decision@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/review-item@0.1.0", constraints: ["explicit user action"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:review:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["review item rejected"], idempotency: "required", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["not_pending"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status rejected"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Tell the requesting user that review items are waiting."
+      intent_examples: []
+      input_schema_ref: "schema://nova/log-transactions-from-email/txn-run@0.1.0"
+      output_schema_ref: "schema://nova/log-transactions-from-email/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send a review-count notice to the requesting user only; no amounts in shared channels."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/txn-run@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/log-transactions-from-email/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-email/txn-run@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

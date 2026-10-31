@@ -1,0 +1,131 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.calendar"
+    name: "Nova — Calendar and meetings"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Compute bookable slots from a master busy-store (bookings, manual blocks, synced calendars, parsed invites) with working hours, buffers and time-zone conversion; exposed to owners and to external callers through MCP."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "MCP"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Calendar database acting as the master busy-store, with a slot-engine function"
+        - "MCP server exposing get_slots and get_availability with bearer authentication"
+        - "At least one busy source: a connected calendar and/or a mailbox for invitation subjects"
+        - "IANA time-zone database in the runtime"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.calendar.availability"
+      name: "Calendar availability"
+      description: "Answer when the owner is free for a meeting of a given length, across time zones."
+      intent_examples: ["when am I free next week for 30 minutes", "find a slot with John on Tuesday"]
+      input_schema_ref: "schema://nova/find-free-slots/request@0.1.0"
+      output_schema_ref: "schema://nova/find-free-slots/slot-result@0.1.0"
+      risk_class: "low"
+      preconditions: ["working hours configured", "owner time zone set", "caller authenticated"]
+      postconditions: ["every returned slot verified free against raw intervals"]
+      tools:
+        - tool_id: "nova.calendar.availability.get_slots"
+          name: "Get slots"
+          description: "Expand working hours into UTC, step by granularity, remove starts that break notice, horizon, buffers, busy blocks or the daily cap. MCP tool get_slots."
+          invocation: {protocol: "MCP", binding_ref: "binding://nova/calendar/get-slots", operation: "get_slots"}
+          input_schema_ref: "schema://nova/find-free-slots/request@0.1.0"
+          output_schema_ref: "schema://nova/find-free-slots/slot-result@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.busy_interval", name: "Busy interval", description: "A booking (times only) or busy block, half-open [start, end)", operations: ["read"], scope_rules: ["calendar owner's tenant only", "public callers see free time only"], schema_ref: "schema://nova/find-free-slots/busy-interval@0.1.0"}
+            - {object_id: "nova.calendar.policy", name: "Scheduling policy", description: "Notice, horizon, granularity, buffers, daily cap", operations: ["read"], scope_rules: ["calendar owner only"], schema_ref: "schema://nova/find-free-slots/policy@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Owner's own agent; may override minimum notice (including 0); sees source detail", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/find-free-slots/request@0.1.0", output_schema_ref: "schema://nova/find-free-slots/slot-result@0.1.0", constraints: ["caller authenticated as the calendar owner"], fallback_variant_id: null}
+            - {variant_id: "public", description: "External caller via MCP; min_notice, host and horizon overrides stripped server-side; free/busy only", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/find-free-slots/request@0.1.0", output_schema_ref: "schema://nova/find-free-slots/slot-result@0.1.0", constraints: ["no busy detail in output", "never falls back to default"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:availability:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: ["public callers: per-client limit TBD"], error_codes: ["invalid_request", "no_working_hours", "unknown_event_type", "unauthenticated"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every slot passes the independent collision re-check", "slot length equals requested minutes", "starts aligned to granularity"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.calendar.availability.get_working_hours"
+          name: "Get working hours"
+          description: "Return working-hour windows (end minute above 1440 means the window crosses midnight), owner time zone and policy. MCP tool get_availability."
+          invocation: {protocol: "MCP", binding_ref: "binding://nova/calendar/get-availability", operation: "get_availability"}
+          input_schema_ref: "schema://nova/find-free-slots/owner-ref@0.1.0"
+          output_schema_ref: "schema://nova/find-free-slots/working-hours@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.working_hours", name: "Working-hour window", description: "Weekday, start minute, end minute in the owner's zone", operations: ["read"], scope_rules: ["calendar owner only"], schema_ref: "schema://nova/find-free-slots/working-hours@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/find-free-slots/owner-ref@0.1.0", output_schema_ref: "schema://nova/find-free-slots/working-hours@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:availability:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["no_working_hours"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["at least one window", "end_min > start_min for every window", "owner_tz is a valid IANA name"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.calendar.availability.list_calendar"
+          name: "List calendar range"
+          description: "Return every booking and busy block in a UTC range; used to re-check slots independently of the slot engine."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/calendar/calendar-range", operation: "calendar"}
+          input_schema_ref: "schema://nova/find-free-slots/range@0.1.0"
+          output_schema_ref: "schema://nova/find-free-slots/busy-interval@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.busy_interval", name: "Busy interval", description: "Booking or busy block", operations: ["read"], scope_rules: ["calendar owner's tenant only", "owner-side verification only; never returned to public callers"], schema_ref: "schema://nova/find-free-slots/busy-interval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/find-free-slots/range@0.1.0", output_schema_ref: "schema://nova/find-free-slots/busy-interval@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:busy:read_detail"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["range_too_large"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every interval has end_utc > start_utc"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.calendar.busy_sync"
+      name: "Busy-store sync"
+      description: "Keep the master busy-store aligned with connected calendars and received meeting invites."
+      intent_examples: ["refresh my calendar before finding slots"]
+      input_schema_ref: "schema://nova/find-free-slots/sync-payload@0.1.0"
+      output_schema_ref: "schema://nova/find-free-slots/sync-status@0.1.0"
+      risk_class: "medium"
+      preconditions: ["source connected", "owner variant only for on-demand refresh"]
+      postconditions: ["source blocks mirror the full future window, or are left untouched"]
+      tools:
+        - tool_id: "nova.calendar.busy_sync.status"
+          name: "Sync status"
+          description: "Last success, last attempt, last error and item count per busy source."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/calendar/busy-sync-status", operation: "status"}
+          input_schema_ref: "schema://nova/find-free-slots/owner-ref@0.1.0"
+          output_schema_ref: "schema://nova/find-free-slots/sync-status@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.sync_status", name: "Sync status", description: "Freshness record of one busy source", operations: ["read"], scope_rules: ["calendar owner's tenant only"], schema_ref: "schema://nova/find-free-slots/sync-status@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/find-free-slots/owner-ref@0.1.0", output_schema_ref: "schema://nova/find-free-slots/sync-status@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:availability:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["unknown_source"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every configured source has a state"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.calendar.busy_sync.sync_calendar"
+          name: "Sync connected calendar"
+          description: "Fetch the next 30 days, classify (skip all-day, cancelled, declined, free, non-default types; in-person events padded 60 min each side, decided negative-evidence-first; skip owner's own bookings by external event ID) and upsert one full-window payload; future blocks of the source missing from the payload are deleted."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/calendar/busy-sync-calendar", operation: "sync_calendar"}
+          input_schema_ref: "schema://nova/find-free-slots/sync-payload@0.1.0"
+          output_schema_ref: "schema://nova/find-free-slots/sync-status@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.busy_block", name: "Busy block", description: "Busy time from one source, keyed by (source, ext_ref)", operations: ["create", "update", "delete"], scope_rules: ["own source only", "never another source's blocks", "never the owner's bookings", "delete only inside a non-empty full-window sweep"], schema_ref: "schema://nova/find-free-slots/busy-interval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Calendar API read of the full future window; only the default variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/find-free-slots/sync-payload@0.1.0", output_schema_ref: "schema://nova/find-free-slots/sync-status@0.1.0", constraints: ["refuse empty payload", "one sync per source at a time"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:busy_sync:write", "calendar:external:read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["owner's busy blocks for this source upserted or swept"], idempotency: "required", timeout_seconds: 60, max_attempts: 1, rate_limits: ["calendar API quota"], error_codes: ["empty_payload_refused", "fetch_failed", "sync_in_progress"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["payload non-empty", "no other source changed", "upserted and deleted counts reported"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.calendar.busy_sync.sync_invites"
+          name: "Sync invites"
+          description: "Read invitation subject lines and dates (no bodies), parse meeting time and named zone abbreviations via a documented table, group by title (latest wins), skip all-day, and upsert busy blocks."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/calendar/busy-sync-invites", operation: "sync_invites"}
+          input_schema_ref: "schema://nova/find-free-slots/sync-payload@0.1.0"
+          output_schema_ref: "schema://nova/find-free-slots/sync-status@0.1.0"
+          objects:
+            - {object_id: "nova.mail.message_metadata", name: "Message metadata", description: "Subject, date and sender of an invitation email", operations: ["read"], scope_rules: ["owner's mailbox", "metadata only, no bodies"], schema_ref: "schema://nova/find-free-slots/invite-metadata@0.1.0"}
+            - {object_id: "nova.calendar.busy_block", name: "Busy block", description: "Busy time from parsed invites", operations: ["create", "update", "delete"], scope_rules: ["invite source only", "delete only inside a non-empty full-window sweep"], schema_ref: "schema://nova/find-free-slots/busy-interval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Subject-line parser; unknown formats skipped, never guessed; only the default variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/find-free-slots/sync-payload@0.1.0", output_schema_ref: "schema://nova/find-free-slots/sync-status@0.1.0", constraints: ["refuse empty payload", "metadata only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:busy_sync:write", "mail:metadata:read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["owner's busy blocks for the invite source upserted or swept"], idempotency: "required", timeout_seconds: 60, max_attempts: 1, rate_limits: [], error_codes: ["empty_payload_refused", "unparseable_subject", "sync_in_progress"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["parsed time round-trips to the subject's stated zone", "all-day invites skipped"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

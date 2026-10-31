@@ -1,0 +1,100 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.finance"
+    name: "Nova — Finance"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Send one grouped, quiet-hours-aware digest of payment reminders (new, T-3, T-1, due, overdue), each stage once, marked only after delivery."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Obligation store from nova.finance.upcoming-payments-radar"
+        - "Owner notification channel with delivery receipts"
+        - "User time zone in the profile"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.finance.obligations"
+      name: "Payment schedule"
+      description: "Scan, mark and roll cycles of the user's payment obligations for alerting."
+      intent_examples: ["remind me about bills", "what is due this week"]
+      input_schema_ref: "schema://nova/payment-reminders/config@0.1.0"
+      output_schema_ref: "schema://nova/payment-reminders/obligation-alert-view@0.1.0"
+      risk_class: "low"
+      preconditions: ["reminders enabled", "time zone known"]
+      postconditions: ["each stage fires at most once per cycle"]
+      tools:
+        - tool_id: "nova.finance.obligations.advance_cycle"
+          name: "Advance auto-charge cycle"
+          description: "Roll periodic auto-charge obligations past their due date to the next cycle; reset cycle stage flags; write history."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/obligations-advance-cycle", operation: "advance_cycle"}
+          input_schema_ref: "schema://nova/payment-reminders/local-date@0.1.0"
+          output_schema_ref: "schema://nova/payment-reminders/cycle-advance-result@0.1.0"
+          objects:
+            - {object_id: "nova.finance.obligation", name: "Obligation", description: "One upcoming payment obligation", operations: ["update"], scope_rules: ["requesting user's tenant only", "auto_charge and periodic recurrence only", "fields: due_date, cycle stage flags"], schema_ref: "schema://nova/payment-reminders/obligation-alert-view@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["PostgreSQL-compatible store"], input_schema_ref: "schema://nova/payment-reminders/local-date@0.1.0", output_schema_ref: "schema://nova/payment-reminders/cycle-advance-result@0.1.0", constraints: ["predicate due_date < today makes repeats no-ops"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:obligations:advance_cycle"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["due_date rolled forward", "cycle flags reset", "history row written"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no periodic auto-charge row has due_date < today"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.obligations.alert_scan"
+          name: "Alert scan"
+          description: "Read-only: open obligations with days_to_due, stage flags and masked account hint; counts of needs-review and needs-date items."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/obligations-alert-scan", operation: "alert_scan"}
+          input_schema_ref: "schema://nova/payment-reminders/local-date@0.1.0"
+          output_schema_ref: "schema://nova/payment-reminders/obligation-alert-view@0.1.0"
+          objects:
+            - {object_id: "nova.finance.obligation", name: "Obligation", description: "One upcoming payment obligation", operations: ["read"], scope_rules: ["requesting user's tenant only", "excludes paid, dismissed, snoozed, needs_date, needs_review"], schema_ref: "schema://nova/payment-reminders/obligation-alert-view@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["PostgreSQL-compatible store"], input_schema_ref: "schema://nova/payment-reminders/local-date@0.1.0", output_schema_ref: "schema://nova/payment-reminders/obligation-alert-view@0.1.0", constraints: ["read-only; never marks"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:obligations:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no excluded status returned", "row versions unchanged"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.obligations.alert_mark"
+          name: "Alert mark"
+          description: "Set sent or superseded stage flags for the current cycle after a delivery receipt; no-op if the cycle moved."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/obligations-alert-mark", operation: "alert_mark"}
+          input_schema_ref: "schema://nova/payment-reminders/mark@0.1.0"
+          output_schema_ref: "schema://nova/payment-reminders/mark-result@0.1.0"
+          objects:
+            - {object_id: "nova.finance.obligation", name: "Obligation", description: "One upcoming payment obligation", operations: ["update"], scope_rules: ["requesting user's tenant only", "fields: alert_state flags, derived status"], schema_ref: "schema://nova/payment-reminders/obligation-alert-view@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["PostgreSQL-compatible store"], input_schema_ref: "schema://nova/payment-reminders/mark@0.1.0", output_schema_ref: "schema://nova/payment-reminders/mark-result@0.1.0", constraints: ["only after a delivery receipt", "cycle guard"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:obligations:alert_mark"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["stage flags set"], idempotency: "required", timeout_seconds: 15, max_attempts: 4, rate_limits: [], error_codes: ["cycle_moved", "not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["applied count equals expected count or cycle_moved no-ops listed"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver the reminder digest to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/payment-reminders/digest@0.1.0"
+      output_schema_ref: "schema://nova/payment-reminders/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured and authorized"]
+      postconditions: ["delivery receipt with message ID, or a clear failure, or an ambiguous outcome"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the digest to the requesting user only; no URLs; masked account hints."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/payment-reminders/digest@0.1.0"
+          output_schema_ref: "schema://nova/payment-reminders/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "The reminder digest", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/payment-reminders/delivery@0.1.0"}
+          variants:
+            - {variant_id: "plain", description: "Plain text; default", compatible_environments: [], input_schema_ref: "schema://nova/payment-reminders/digest@0.1.0", output_schema_ref: "schema://nova/payment-reminders/delivery@0.1.0", constraints: ["owner only", "no URLs"], fallback_variant_id: null}
+            - {variant_id: "html", description: "Channel HTML mode with every schedule string HTML-escaped; operator-selected; same channel and recipient", compatible_environments: [], input_schema_ref: "schema://nova/payment-reminders/digest@0.1.0", output_schema_ref: "schema://nova/payment-reminders/delivery@0.1.0", constraints: ["owner only", "no URLs", "strings escaped"], fallback_variant_id: "plain"}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "recommended", timeout_seconds: 15, max_attempts: 3, rate_limits: ["one digest per run"], error_codes: ["channel_unavailable", "format_rejected", "ambiguous_timeout"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["receipt has message ID", "recipient is the owner channel"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

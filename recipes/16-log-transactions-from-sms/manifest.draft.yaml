@@ -1,0 +1,181 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.finance"
+    name: "Nova — Finance"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Receive forwarded bank SMS on an authenticated webhook, filter for privacy, deduplicate by hashed key, extract with an LLM and route like the email transaction logger."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "webhook"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "User-installed SMS-forwarder app on the user's own phone, configured with the endpoint and a per-installation token"
+        - "Operator-approved structured-output LLM provider"
+        - "Finance hub router, review queue and external-app sync from nova.finance.log-transactions-from-email"
+        - "Standing auto-log approval (may be empty = review-only)"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.sms.ingest"
+      name: "SMS ingest"
+      description: "Authenticated inbound webhook for forwarded SMS with an idempotency ledger."
+      intent_examples: []
+      input_schema_ref: "schema://nova/log-transactions-from-sms/forwarded-sms@0.1.0"
+      output_schema_ref: "schema://nova/log-transactions-from-sms/ack@0.1.0"
+      risk_class: "high"
+      preconditions: ["active installation token", "HTTPS"]
+      postconditions: ["one ledger row per idempotency key", "no SMS text persisted", "HTTP status consistent with ledger state"]
+      tools:
+        - tool_id: "nova.sms.ingest.receive"
+          name: "Receive forwarded SMS"
+          description: "Constant-time header-token check, size limit (8 KB), normalisation of common forwarder fields, SHA-256 idempotency key, privacy pre-filter."
+          invocation: {protocol: "webhook", binding_ref: "binding://nova/sms/webhook", operation: "receive"}
+          input_schema_ref: "schema://nova/log-transactions-from-sms/forwarded-sms@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-sms/normalised-sms@0.1.0"
+          objects:
+            - {object_id: "nova.sms.forwarded_message", name: "Forwarded SMS", description: "One forwarded text message held in memory", operations: ["read"], scope_rules: ["authenticated installation only", "text never persisted"], schema_ref: "schema://nova/log-transactions-from-sms/forwarded-sms@0.1.0"}
+          variants:
+            - {variant_id: "json", description: "application/json body; default", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-sms/forwarded-sms@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-sms/normalised-sms@0.1.0", constraints: ["<= 8 KB", "token in header only"], fallback_variant_id: null}
+            - {variant_id: "form", description: "application/x-www-form-urlencoded body; selected by content type; identical output and auth", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-sms/forwarded-sms@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-sms/normalised-sms@0.1.0", constraints: ["<= 8 KB", "token in header only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "per-installation shared token (secret_ref://sms-forwarder-token)", required_scopes: ["sms:ingest"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "required", timeout_seconds: 25, max_attempts: 1, rate_limits: ["60 requests/min per token", "10 auth failures/10 min -> 30 min block"], error_codes: ["unauthorized", "payload_invalid", "payload_too_large", "future_timestamp", "blocked"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["unauthenticated requests never reach normalisation", "filtered messages never reach the LLM"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.sms.ingest.register"
+          name: "Register idempotency key"
+          description: "Insert a processing row or return the existing row (done, processing, retryable)."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sms/ingest-ledger", operation: "register"}
+          input_schema_ref: "schema://nova/log-transactions-from-sms/normalised-sms@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-sms/ingest-row@0.1.0"
+          objects:
+            - {object_id: "nova.sms.ingest_row", name: "Ingest ledger row", description: "Key, sender, time, state and verdict for one SMS", operations: ["create", "read"], scope_rules: ["requesting user's tenant only", "no text column"], schema_ref: "schema://nova/log-transactions-from-sms/ingest-row@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-sms/normalised-sms@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-sms/ingest-row@0.1.0", constraints: ["unique idempotency_key"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sms:ingest"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["ledger row created"], idempotency: "required", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["exists_done", "exists_processing", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["exactly one row per key"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.sms.ingest.complete"
+          name: "Complete ledger row"
+          description: "Set state (done or retryable), verdict, outcome reference and attempts."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sms/ingest-ledger", operation: "complete"}
+          input_schema_ref: "schema://nova/log-transactions-from-sms/ingest-row@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-sms/ingest-row@0.1.0"
+          objects:
+            - {object_id: "nova.sms.ingest_row", name: "Ingest ledger row", description: "Key, sender, time, state and verdict for one SMS", operations: ["update"], scope_rules: ["fields: state, verdict, outcome_ref, attempts"], schema_ref: "schema://nova/log-transactions-from-sms/ingest-row@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-sms/ingest-row@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-sms/ingest-row@0.1.0", constraints: ["owner of the processing row only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sms:ingest"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["ledger row updated"], idempotency: "required", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["not_owner"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["200 <-> done, 503 <-> retryable"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.extract"
+      name: "Financial extraction"
+      description: "Structured LLM extraction of a transaction from filtered SMS text."
+      intent_examples: []
+      input_schema_ref: "schema://nova/log-transactions-from-sms/normalised-sms@0.1.0"
+      output_schema_ref: "schema://nova/log-transactions-from-email/extraction@0.1.0"
+      risk_class: "medium"
+      preconditions: ["operator-approved LLM provider", "message passed the privacy filter"]
+      postconditions: ["schema-valid extraction or retryable"]
+      tools:
+        - tool_id: "nova.finance.extract.transaction"
+          name: "Extract transaction"
+          description: "Same transaction schema as the email logger."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/extract-transaction", operation: "extract_transaction"}
+          input_schema_ref: "schema://nova/log-transactions-from-sms/normalised-sms@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/extraction@0.1.0"
+          objects:
+            - {object_id: "nova.finance.extraction", name: "Extraction", description: "Structured reading of one SMS", operations: ["create"], scope_rules: ["in-run only"], schema_ref: "schema://nova/log-transactions-from-email/extraction@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Primary structured-output LLM, temperature 0", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/log-transactions-from-sms/normalised-sms@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/extraction@0.1.0", constraints: ["no runtime provider fallback"], fallback_variant_id: null}
+            - {variant_id: "alternate", description: "Second provider; operator configuration only", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/log-transactions-from-sms/normalised-sms@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/extraction@0.1.0", constraints: ["operator configuration only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["llm:extract"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["filtered SMS text sent to the LLM provider"], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: ["daily cap TBD"], error_codes: ["invalid_json", "provider_unavailable", "cap_reached"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["schema valid", "money fields supported by the text"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.finance.hub"
+      name: "Finance hub"
+      description: "Account match, duplicate detection and atomic routing with source_type sms."
+      intent_examples: []
+      input_schema_ref: "schema://nova/log-transactions-from-email/extraction@0.1.0"
+      output_schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0"
+      risk_class: "high"
+      preconditions: ["accounts configured", "standing approval loaded"]
+      postconditions: ["unique (source_type, source_ref)", "auto-logged records satisfy the gate"]
+      tools:
+        - tool_id: "nova.finance.hub.match_account"
+          name: "Match account"
+          description: "Account hint and sender ID; currency-gated."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/match-account", operation: "match_account"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/account-hint@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/account-ref@0.1.0"
+          objects:
+            - {object_id: "nova.finance.account", name: "Account", description: "A finance-hub account", operations: ["read"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/log-transactions-from-email/account-ref@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-email/account-hint@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/account-ref@0.1.0", constraints: ["read-only", "currency-gated"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:hub:accounts:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["ambiguous", "no_match"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["high match unique and currency-equal"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.hub.find_duplicate"
+          name: "Find duplicate"
+          description: "Manual entry with same account, direction and exact amount within +/-3 days, or same normalised reference from any source."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/find-duplicate", operation: "find_duplicate"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/dup-query@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/dup-result@0.1.0"
+          objects:
+            - {object_id: "nova.finance.hub_record", name: "Hub record", description: "A logged transaction", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-email/dup-query@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/dup-result@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:hub:records:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["multiple"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["match belongs to tenant"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.hub.route_transaction"
+          name: "Route transaction"
+          description: "Server-enforced gate; atomically stage a pending record (source_type sms), add a review item, or reconcile."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/route-transaction", operation: "route_transaction"}
+          input_schema_ref: "schema://nova/log-transactions-from-email/route-input@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-email/route-result@0.1.0"
+          objects:
+            - {object_id: "nova.finance.hub_record", name: "Hub record", description: "A logged transaction", operations: ["create"], scope_rules: ["opted-in accounts only for auto-log", "<= per-currency cap", "unique (source_type, source_ref)"], schema_ref: "schema://nova/log-transactions-from-email/hub-record@0.1.0"}
+            - {object_id: "nova.finance.review_item", name: "Review item", description: "A transaction awaiting approval", operations: ["create"], scope_rules: ["unique source_ref"], schema_ref: "schema://nova/log-transactions-from-email/review-item@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Security-definer database function shared with the email logger", compatible_environments: ["PostgreSQL-compatible store"], input_schema_ref: "schema://nova/log-transactions-from-email/route-input@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-email/route-result@0.1.0", constraints: ["gate recomputed server-side"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:hub:records:write", "finance:review:write"], consent_required: true, grant_ref: "standing auto-log approval (approval_id)", tenant_binding_required: true}
+          execution: {side_effects: ["pending record created", "review item created"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["exists", "gate_mismatch", "approval_expired"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["outcome matches read-back"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Review nudges (hourly batch) and immediate security notices to the requesting user."
+      intent_examples: []
+      input_schema_ref: "schema://nova/log-transactions-from-sms/ingest-row@0.1.0"
+      output_schema_ref: "schema://nova/log-transactions-from-sms/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send to the requesting user only; never SMS text, tokens or amounts in shared channels."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/log-transactions-from-sms/ingest-row@0.1.0"
+          output_schema_ref: "schema://nova/log-transactions-from-sms/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/log-transactions-from-sms/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/log-transactions-from-sms/ingest-row@0.1.0", output_schema_ref: "schema://nova/log-transactions-from-sms/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: ["review nudges at most hourly"], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

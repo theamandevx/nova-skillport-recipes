@@ -1,0 +1,295 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.content"
+    name: "Nova — Content studio"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Publish one approved post to the user's own X account after a per-post approval that shows the cost; claim lock and reconciliation prevent double posts."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "X API v2 pay-per-use write access"
+        - "User-context OAuth 2.0 (authorization code with PKCE) with scopes tweet.read, tweet.write, users.read, media.write, offline.access"
+        - "Content store with approved posts and a publish state"
+        - "Object storage holding post images"
+        - "Operator-maintained, date-stamped X price table"
+        - "Usage ledger and owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.content.posts"
+      name: "Post publish state"
+      description: "Read approved posts and track their publish state with a claim lock."
+      intent_examples: ["publish post 51 to X"]
+      input_schema_ref: "schema://nova/publish-to-x/request@0.1.0"
+      output_schema_ref: "schema://nova/publish-to-x/post@0.1.0"
+      risk_class: "medium"
+      preconditions: ["post approved for platform x"]
+      postconditions: ["at most one publish per post"]
+      tools:
+        - tool_id: "nova.content.posts.get"
+          name: "Get post"
+          description: "Return text, image reference, platform, approval state, content hash and publish state."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/posts", operation: "get"}
+          input_schema_ref: "schema://nova/publish-to-x/request@0.1.0"
+          output_schema_ref: "schema://nova/publish-to-x/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "A social post owned by the user", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/publish-to-x/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/publish-to-x/request@0.1.0", output_schema_ref: "schema://nova/publish-to-x/post@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:posts:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found", "not_approved", "already_published"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["tenant matches", "content_hash computed"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.posts.claim_publish"
+          name: "Claim publish"
+          description: "Compare-and-set publish_state approved to publishing with claim_id and a 10-minute lease, only if content_hash matches."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/posts", operation: "claim_publish"}
+          input_schema_ref: "schema://nova/publish-to-x/post@0.1.0"
+          output_schema_ref: "schema://nova/publish-to-x/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "A social post owned by the user", operations: ["update"], scope_rules: ["publish_state, claim_id, claimed_at, lease_expires_at only"], schema_ref: "schema://nova/publish-to-x/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/publish-to-x/post@0.1.0", output_schema_ref: "schema://nova/publish-to-x/post@0.1.0", constraints: ["compare-and-set", "content hash must match the approval"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:posts:publish_state"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["post locked for publishing"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["claim_lost", "hash_mismatch"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read-back shows this claim_id"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.posts.mark_published"
+          name: "Mark published"
+          description: "Set publishing to published with platform post ID, permalink and time, conditional on claim_id."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/posts", operation: "mark_published"}
+          input_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0"
+          output_schema_ref: "schema://nova/publish-to-x/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "A social post owned by the user", operations: ["update"], scope_rules: ["publish_state, platform_post_id, permalink, published_at only"], schema_ref: "schema://nova/publish-to-x/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0", output_schema_ref: "schema://nova/publish-to-x/post@0.1.0", constraints: ["conditional on claim_id"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:posts:publish_state"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["post recorded as published"], idempotency: "required", timeout_seconds: 10, max_attempts: 4, rate_limits: [], error_codes: ["claim_mismatch"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read-back state published with platform_post_id"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.posts.release_claim"
+          name: "Release claim"
+          description: "Set publishing back to approved only when the post is confirmed not live, or to publish_unknown when unresolved."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/posts", operation: "release_claim"}
+          input_schema_ref: "schema://nova/publish-to-x/post@0.1.0"
+          output_schema_ref: "schema://nova/publish-to-x/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "A social post owned by the user", operations: ["update"], scope_rules: ["publish_state, claim fields, last_publish_error only"], schema_ref: "schema://nova/publish-to-x/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/publish-to-x/post@0.1.0", output_schema_ref: "schema://nova/publish-to-x/post@0.1.0", constraints: ["to approved only with confirmation that nothing is live"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:posts:publish_state"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["claim released or marked unknown"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["claim_mismatch"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["state approved or publish_unknown"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.link_guard"
+      name: "Link guard"
+      description: "Detect links in post text so the higher link price is shown before approval."
+      intent_examples: []
+      input_schema_ref: "schema://nova/publish-to-x/post@0.1.0"
+      output_schema_ref: "schema://nova/publish-to-x/link-check@0.1.0"
+      risk_class: "low"
+      preconditions: []
+      postconditions: ["contains_link decided with matches"]
+      tools:
+        - tool_id: "nova.content.link_guard.detect"
+          name: "Detect links"
+          description: "Match URLs, www hosts and bare domains from a curated TLD list; version numbers and file names do not match."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/link-guard", operation: "detect"}
+          input_schema_ref: "schema://nova/publish-to-x/post@0.1.0"
+          output_schema_ref: "schema://nova/publish-to-x/link-check@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Post text", operations: ["read"], scope_rules: ["text only"], schema_ref: "schema://nova/publish-to-x/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/publish-to-x/post@0.1.0", output_schema_ref: "schema://nova/publish-to-x/link-check@0.1.0", constraints: ["deterministic"], fallback_variant_id: null}
+          authorization: {required: false, identity_provider: "TBD", required_scopes: [], consent_required: false, grant_ref: null, tenant_binding_required: false}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 2, rate_limits: [], error_codes: []}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["known positives detected", "known negatives not detected"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.x.pricing"
+      name: "X post pricing"
+      description: "Quote the cost of one post from the operator's date-stamped price table."
+      intent_examples: ["how much will this post cost"]
+      input_schema_ref: "schema://nova/publish-to-x/link-check@0.1.0"
+      output_schema_ref: "schema://nova/publish-to-x/quote@0.1.0"
+      risk_class: "low"
+      preconditions: ["price table loaded and within freshness window"]
+      postconditions: ["quote with as_of date"]
+      tools:
+        - tool_id: "nova.x.pricing.quote"
+          name: "Quote post"
+          description: "Return the price for a post with or without a link."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/x/pricing", operation: "quote"}
+          input_schema_ref: "schema://nova/publish-to-x/link-check@0.1.0"
+          output_schema_ref: "schema://nova/publish-to-x/quote@0.1.0"
+          objects:
+            - {object_id: "nova.x.price_table", name: "Price table", description: "Operator-maintained X prices", operations: ["read"], scope_rules: [], schema_ref: "schema://nova/publish-to-x/quote@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/publish-to-x/link-check@0.1.0", output_schema_ref: "schema://nova/publish-to-x/quote@0.1.0", constraints: ["read-only", "stale table blocks publishing"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["pricing:read"], consent_required: false, grant_ref: null, tenant_binding_required: false}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 2, rate_limits: [], error_codes: ["price_table_stale"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["link price applied when contains_link"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.x.account"
+      name: "Connected X account"
+      description: "Identity, granted scopes and token validity of the user's connected X account."
+      intent_examples: []
+      input_schema_ref: "schema://nova/publish-to-x/request@0.1.0"
+      output_schema_ref: "schema://nova/publish-to-x/account@0.1.0"
+      risk_class: "medium"
+      preconditions: ["account connected"]
+      postconditions: ["account identity and scopes known"]
+      tools:
+        - tool_id: "nova.x.account.whoami"
+          name: "Who am I"
+          description: "Refresh the token if needed; return account ID, handle and granted scopes (never tokens)."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/x/whoami", operation: "users_me"}
+          input_schema_ref: "schema://nova/publish-to-x/request@0.1.0"
+          output_schema_ref: "schema://nova/publish-to-x/account@0.1.0"
+          objects:
+            - {object_id: "nova.x.account", name: "X account", description: "The user's own connected account", operations: ["read"], scope_rules: ["the configured account only"], schema_ref: "schema://nova/publish-to-x/account@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "User-context OAuth 2.0 PKCE; only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/publish-to-x/request@0.1.0", output_schema_ref: "schema://nova/publish-to-x/account@0.1.0", constraints: ["no DM or follow scopes"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "X OAuth 2.0 (UNVERIFIED binding)", required_scopes: ["users.read", "offline.access"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["token refreshed when expired"], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["refresh_failed", "scope_missing"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["account equals configured account", "tweet.write granted"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.x.media"
+      name: "X media upload"
+      description: "Upload the approved image to obtain a media ID."
+      intent_examples: []
+      input_schema_ref: "schema://nova/publish-to-x/post@0.1.0"
+      output_schema_ref: "schema://nova/publish-to-x/media@0.1.0"
+      risk_class: "medium"
+      preconditions: ["claim held", "media.write granted"]
+      postconditions: ["media ID for the approved image hash"]
+      tools:
+        - tool_id: "nova.x.media.upload"
+          name: "Upload media"
+          description: "X API v2 media upload with category tweet_image; unattached media is not public."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/x/media-upload", operation: "media_upload"}
+          input_schema_ref: "schema://nova/publish-to-x/post@0.1.0"
+          output_schema_ref: "schema://nova/publish-to-x/media@0.1.0"
+          objects:
+            - {object_id: "nova.x.media", name: "X media", description: "Uploaded image awaiting attachment", operations: ["create"], scope_rules: ["connected account only"], schema_ref: "schema://nova/publish-to-x/media@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/publish-to-x/post@0.1.0", output_schema_ref: "schema://nova/publish-to-x/media@0.1.0", constraints: ["image hash must equal the approved hash"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "X OAuth 2.0 (UNVERIFIED binding)", required_scopes: ["media.write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["media object created at X (not public)"], idempotency: "recommended", timeout_seconds: 60, max_attempts: 3, rate_limits: ["TBD per access tier"], error_codes: ["forbidden", "unsupported_media", "too_large"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["media ID returned"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.x.posts"
+      name: "X posts"
+      description: "Create one post on the user's account and read posts back for reconciliation and verification."
+      intent_examples: ["publish to X"]
+      input_schema_ref: "schema://nova/publish-to-x/approval@0.1.0"
+      output_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0"
+      risk_class: "high"
+      preconditions: ["publish approval valid", "claim held", "daily cap not reached"]
+      postconditions: ["at most one live post per post_id", "live content equals approved content"]
+      tools:
+        - tool_id: "nova.x.posts.create"
+          name: "Create post"
+          description: "Publish one post (X API v2 create-post); never retried automatically."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/x/create-post", operation: "create_post"}
+          input_schema_ref: "schema://nova/publish-to-x/approval@0.1.0"
+          output_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0"
+          objects:
+            - {object_id: "nova.x.post", name: "X post", description: "A public post on the user's account", operations: ["create"], scope_rules: ["connected account only", "approved content only"], schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0"}
+          variants:
+            - {variant_id: "text", description: "Text only; selected when the post has no image", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/publish-to-x/approval@0.1.0", output_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0", constraints: ["weighted length at most 280"], fallback_variant_id: null}
+            - {variant_id: "with-media", description: "Text plus one uploaded image; selected when the post has an image", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/publish-to-x/approval@0.1.0", output_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0", constraints: ["requires media ID", "never degrade to text-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "X OAuth 2.0 (UNVERIFIED binding)", required_scopes: ["tweet.write", "tweet.read", "users.read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["public post on the user's timeline", "per-post charge (higher with a link)"], idempotency: "required", timeout_seconds: 20, max_attempts: 1, rate_limits: ["one publish in flight per account", "daily post cap (TBD)"], error_codes: ["rejected", "insufficient_credit", "duplicate_content", "timeout"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["post ID returned", "read-back text, author and media match"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.x.posts.list_recent"
+          name: "List recent posts"
+          description: "The account's posts since a time, for reconciling ambiguous outcomes."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/x/list-recent", operation: "user_posts"}
+          input_schema_ref: "schema://nova/publish-to-x/account@0.1.0"
+          output_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0"
+          objects:
+            - {object_id: "nova.x.post", name: "X post", description: "A post on the user's account", operations: ["read"], scope_rules: ["connected account only", "used for matching, not stored"], schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/publish-to-x/account@0.1.0", output_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0", constraints: ["read-only", "at most 20 posts per check"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "X OAuth 2.0 (UNVERIFIED binding)", required_scopes: ["tweet.read", "users.read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: ["TBD per access tier"], error_codes: ["rate_limited"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["match requires text hash and media presence"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.x.posts.get"
+          name: "Get post"
+          description: "Read one post by ID to verify the live content."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/x/get-post", operation: "get_post"}
+          input_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0"
+          output_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0"
+          objects:
+            - {object_id: "nova.x.post", name: "X post", description: "A post on the user's account", operations: ["read"], scope_rules: ["connected account only"], schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0", output_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "X OAuth 2.0 (UNVERIFIED binding)", required_scopes: ["tweet.read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["author equals configured account"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.usage.ledger"
+      name: "Usage ledger"
+      description: "Append-only record of spend, attributed to a job."
+      intent_examples: []
+      input_schema_ref: "schema://nova/publish-to-x/usage-record@0.1.0"
+      output_schema_ref: "schema://nova/publish-to-x/usage-record@0.1.0"
+      risk_class: "low"
+      preconditions: ["post confirmed published"]
+      postconditions: ["one row per published post"]
+      tools:
+        - tool_id: "nova.usage.ledger.record"
+          name: "Record usage"
+          description: "Append one row (provider x, units posts 1, with_link, with_media, meta.job content:publish-to-x)."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/usage/ledger", operation: "record"}
+          input_schema_ref: "schema://nova/publish-to-x/usage-record@0.1.0"
+          output_schema_ref: "schema://nova/publish-to-x/usage-record@0.1.0"
+          objects:
+            - {object_id: "nova.usage.record", name: "Usage row", description: "One spend entry", operations: ["create"], scope_rules: ["tenant ledger only", "append-only"], schema_ref: "schema://nova/publish-to-x/usage-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/publish-to-x/usage-record@0.1.0", output_schema_ref: "schema://nova/publish-to-x/usage-record@0.1.0", constraints: ["unique post_id + platform_post_id"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["usage:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["ledger row appended"], idempotency: "required", timeout_seconds: 10, max_attempts: 4, rate_limits: [], error_codes: ["duplicate_key"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["row readable by usage_id"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver approval prompts and results to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0"
+      output_schema_ref: "schema://nova/publish-to-x/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the approval prompt and the publish result to the requesting user only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0"
+          output_schema_ref: "schema://nova/publish-to-x/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/publish-to-x/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/publish-to-x/publish-result@0.1.0", output_schema_ref: "schema://nova/publish-to-x/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

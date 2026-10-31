@@ -1,0 +1,214 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.ops"
+    name: "Nova — Operations"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Receive an external project's pushed status rollup, show it with its age, send red alerts and detect a stale feed — without holding any credential for that project."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "HTTPS ingest endpoint on the automation hub"
+        - "User-installed sender in the external project (read-only aggregate function + scheduler able to POST over HTTPS, secret kept in that project's own secret store)"
+        - "Snapshot store, scheduler for the freshness check, owner channel and dashboard"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.watch.feed"
+      name: "Push feed registration"
+      description: "Register a push feed and issue or rotate its ingest secret, shown once."
+      intent_examples: ["watch my client portal", "rotate the portal feed secret"]
+      input_schema_ref: "schema://nova/external-project-watch/feed@0.1.0"
+      output_schema_ref: "schema://nova/external-project-watch/secret-issue@0.1.0"
+      risk_class: "medium"
+      preconditions: ["owner authenticated", "owner approval"]
+      postconditions: ["secret retrievable never again after display"]
+      tools:
+        - tool_id: "nova.watch.feed.register"
+          name: "Register feed"
+          description: "Create a feed with cadence, auth variant, rules and retention; mint a 256-bit secret."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/watch/feed-register", operation: "register"}
+          input_schema_ref: "schema://nova/external-project-watch/feed@0.1.0"
+          output_schema_ref: "schema://nova/external-project-watch/secret-issue@0.1.0"
+          objects:
+            - {object_id: "nova.watch.feed", name: "Feed", description: "One registered push feed", operations: ["create"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/external-project-watch/feed@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/external-project-watch/feed@0.1.0", output_schema_ref: "schema://nova/external-project-watch/secret-issue@0.1.0", constraints: ["owner approval", "shared-header variant needs explicit confirmation"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["watch:feed:admin"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["feed created", "secret stored by reference"], idempotency: "required", timeout_seconds: 30, max_attempts: 1, rate_limits: [], error_codes: ["invalid_feed", "storage_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["feed readable", "secret not retrievable after display"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.watch.feed.rotate_secret"
+          name: "Rotate ingest secret"
+          description: "Issue a new secret; accept old and new until overlap_until, then revoke the old one."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/watch/feed-rotate", operation: "rotate_secret"}
+          input_schema_ref: "schema://nova/external-project-watch/feed@0.1.0"
+          output_schema_ref: "schema://nova/external-project-watch/secret-issue@0.1.0"
+          objects:
+            - {object_id: "nova.watch.feed", name: "Feed", description: "One registered push feed", operations: ["update"], scope_rules: ["secret fields only"], schema_ref: "schema://nova/external-project-watch/feed@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/external-project-watch/feed@0.1.0", output_schema_ref: "schema://nova/external-project-watch/secret-issue@0.1.0", constraints: ["overlap 0 to 7 days, default 24 h"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["watch:feed:admin"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["new secret valid", "old secret revoked after overlap"], idempotency: "required", timeout_seconds: 30, max_attempts: 1, rate_limits: [], error_codes: ["storage_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["new-secret push accepted", "old-secret push rejected after overlap"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.watch.ingest"
+      name: "Authenticated rollup ingest"
+      description: "Accept only authenticated, size-limited, aggregate-only rollup pushes."
+      intent_examples: []
+      input_schema_ref: "schema://nova/external-project-watch/rollup@0.1.0"
+      output_schema_ref: "schema://nova/external-project-watch/ingest-response@0.1.0"
+      risk_class: "medium"
+      preconditions: ["feed registered and enabled"]
+      postconditions: ["nothing stored unless authenticated and schema-valid"]
+      tools:
+        - tool_id: "nova.watch.ingest.receive"
+          name: "Receive push"
+          description: "Size check, authenticate with the feed's variant, validate strictly, then hand off to storage and respond."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/watch/ingest", operation: "receive"}
+          input_schema_ref: "schema://nova/external-project-watch/rollup@0.1.0"
+          output_schema_ref: "schema://nova/external-project-watch/ingest-response@0.1.0"
+          objects:
+            - {object_id: "nova.watch.push_request", name: "Push request", description: "One inbound HTTPS POST from the sender", operations: ["read"], scope_rules: ["one feed per secret", "headers and body never logged"], schema_ref: "schema://nova/external-project-watch/rollup@0.1.0"}
+          variants:
+            - {variant_id: "hmac", description: "Default: HMAC-SHA256 over timestamp.body, constant-time compare, 5-minute window, snapshot_id as nonce", compatible_environments: ["senders able to compute HMAC"], input_schema_ref: "schema://nova/external-project-watch/rollup@0.1.0", output_schema_ref: "schema://nova/external-project-watch/ingest-response@0.1.0", constraints: ["TLS required", "body at most 32 KB"], fallback_variant_id: null}
+            - {variant_id: "shared-header", description: "Opt-in: high-entropy header secret over HTTPS; receiver keeps only its hash; weaker, labelled on the dashboard", compatible_environments: ["senders unable to compute HMAC"], input_schema_ref: "schema://nova/external-project-watch/rollup@0.1.0", output_schema_ref: "schema://nova/external-project-watch/ingest-response@0.1.0", constraints: ["explicit owner confirmation", "TLS required", "body at most 32 KB"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["watch:ingest"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "required", timeout_seconds: 5, max_attempts: 1, rate_limits: ["12 pushes per hour per feed"], error_codes: ["401_unauthenticated", "410_feed_disabled", "413_too_large", "422_invalid", "429_rate_limited", "503_store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["signature verified before parse result is used", "additionalProperties false at every level", "body feed_id equals authenticated feed"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.watch.snapshots"
+      name: "Snapshot store"
+      description: "Append-only snapshots with previous and latest reads."
+      intent_examples: ["how is the client portal doing"]
+      input_schema_ref: "schema://nova/external-project-watch/snapshot-query@0.1.0"
+      output_schema_ref: "schema://nova/external-project-watch/snapshot-view@0.1.0"
+      risk_class: "low"
+      preconditions: ["feed exists"]
+      postconditions: ["latest pointer only moves forward in captured_at"]
+      tools:
+        - tool_id: "nova.watch.snapshots.append"
+          name: "Append snapshot"
+          description: "Insert one snapshot through a writer function; unique on feed_id plus snapshot_id."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/watch/snapshot-append", operation: "append"}
+          input_schema_ref: "schema://nova/external-project-watch/snapshot@0.1.0"
+          output_schema_ref: "schema://nova/external-project-watch/snapshot@0.1.0"
+          objects:
+            - {object_id: "nova.watch.snapshot", name: "Snapshot", description: "One stored rollup", operations: ["create"], scope_rules: ["append-only", "delete only by declared retention sweep, never latest or comparison base"], schema_ref: "schema://nova/external-project-watch/snapshot@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/external-project-watch/snapshot@0.1.0", output_schema_ref: "schema://nova/external-project-watch/snapshot@0.1.0", constraints: ["no update or delete grants on this path"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["watch:snapshots:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["snapshot stored"], idempotency: "required", timeout_seconds: 2, max_attempts: 2, rate_limits: [], error_codes: ["duplicate", "write_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read-back by snapshot_id"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.watch.snapshots.previous"
+          name: "Get comparison base"
+          description: "Return the latest in-order, non-excluded snapshot before a given time, and whether a snapshot_id already exists."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/watch/snapshot-previous", operation: "previous"}
+          input_schema_ref: "schema://nova/external-project-watch/snapshot-query@0.1.0"
+          output_schema_ref: "schema://nova/external-project-watch/snapshot@0.1.0"
+          objects:
+            - {object_id: "nova.watch.snapshot", name: "Snapshot", description: "One stored rollup", operations: ["read"], scope_rules: ["same feed only"], schema_ref: "schema://nova/external-project-watch/snapshot@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/external-project-watch/snapshot-query@0.1.0", output_schema_ref: "schema://nova/external-project-watch/snapshot@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["watch:snapshots:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 2, max_attempts: 2, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["excluded and out-of-order snapshots never returned as base"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.watch.snapshots.latest"
+          name: "Get latest view"
+          description: "Return the latest snapshot with age_min and freshness computed server-side for the dashboard."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/watch/snapshot-latest", operation: "latest"}
+          input_schema_ref: "schema://nova/external-project-watch/snapshot-query@0.1.0"
+          output_schema_ref: "schema://nova/external-project-watch/snapshot-view@0.1.0"
+          objects:
+            - {object_id: "nova.watch.snapshot", name: "Snapshot", description: "One stored rollup", operations: ["read"], scope_rules: ["owner dashboard session only"], schema_ref: "schema://nova/external-project-watch/snapshot@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/external-project-watch/snapshot-query@0.1.0", output_schema_ref: "schema://nova/external-project-watch/snapshot-view@0.1.0", constraints: ["read-only", "pushed strings escaped"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["watch:snapshots:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 3, max_attempts: 2, rate_limits: [], error_codes: ["no_snapshot"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["freshness stale whenever age exceeds threshold"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.watch.rules"
+      name: "Red-alert rules"
+      description: "Decide entered, worsened and resolved rules from the comparison base and the new snapshot."
+      intent_examples: []
+      input_schema_ref: "schema://nova/external-project-watch/snapshot@0.1.0"
+      output_schema_ref: "schema://nova/external-project-watch/rule-result@0.1.0"
+      risk_class: "low"
+      preconditions: ["comparison base exists, otherwise baseline"]
+      postconditions: ["alert values equal stored values"]
+      tools:
+        - tool_id: "nova.watch.rules.evaluate"
+          name: "Evaluate rules"
+          description: "Pure function: level rules on entry, increase rules on rise, integration live-to-idle only when named in both lists, all-zero after non-zero marked suspicious."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/watch/rules", operation: "evaluate"}
+          input_schema_ref: "schema://nova/external-project-watch/snapshot@0.1.0"
+          output_schema_ref: "schema://nova/external-project-watch/rule-result@0.1.0"
+          objects:
+            - {object_id: "nova.watch.feed_state", name: "Feed state", description: "Red map, staleness flags and counters for one feed", operations: ["read", "update"], scope_rules: ["same feed only", "compare-and-swap on version"], schema_ref: "schema://nova/external-project-watch/feed-state@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported; deterministic, no LLM", compatible_environments: [], input_schema_ref: "schema://nova/external-project-watch/snapshot@0.1.0", output_schema_ref: "schema://nova/external-project-watch/rule-result@0.1.0", constraints: ["independent recomputation must match"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["watch:snapshots:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["feed state red map updated"], idempotency: "required", timeout_seconds: 1, max_attempts: 1, rate_limits: [], error_codes: ["recompute_mismatch"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["zero alerts on baseline", "second implementation agrees"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.watch.freshness"
+      name: "Stale feed detection"
+      description: "Mark a feed stale once when pushes stop and fresh once when they resume."
+      intent_examples: []
+      input_schema_ref: "schema://nova/external-project-watch/feed-state@0.1.0"
+      output_schema_ref: "schema://nova/external-project-watch/feed-state@0.1.0"
+      risk_class: "low"
+      preconditions: ["at least one snapshot received"]
+      postconditions: ["stale flag matches computed age"]
+      tools:
+        - tool_id: "nova.watch.freshness.check"
+          name: "Check freshness"
+          description: "Stale iff now minus last_snapshot_at exceeds cadence times stale_after_cadences plus grace."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/watch/freshness", operation: "check"}
+          input_schema_ref: "schema://nova/external-project-watch/feed-state@0.1.0"
+          output_schema_ref: "schema://nova/external-project-watch/feed-state@0.1.0"
+          objects:
+            - {object_id: "nova.watch.feed_state", name: "Feed state", description: "Red map, staleness flags and counters for one feed", operations: ["read", "update"], scope_rules: ["stale and stale_alerted fields only"], schema_ref: "schema://nova/external-project-watch/feed-state@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/external-project-watch/feed-state@0.1.0", output_schema_ref: "schema://nova/external-project-watch/feed-state@0.1.0", constraints: ["one alert per freshness change"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["watch:snapshots:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["feed state stale flag updated"], idempotency: "required", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["state_conflict"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["one stale alert per outage", "one fresh_again on recovery"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the owner's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/external-project-watch/alert@0.1.0"
+      output_schema_ref: "schema://nova/external-project-watch/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send a plain-text red alert, recovery or stale notice to the owner only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/external-project-watch/alert@0.1.0"
+          output_schema_ref: "schema://nova/external-project-watch/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the owner", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/external-project-watch/alert@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/external-project-watch/alert@0.1.0", output_schema_ref: "schema://nova/external-project-watch/delivery@0.1.0", constraints: ["owner only", "plain text, no markup parsing of pushed strings"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the owner"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

@@ -1,0 +1,136 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.sales"
+    name: "Nova — Sales"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Daily owner digest of stalled deals with grounded next steps and openers; never contacts a lead; no-repeat flags after delivery."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Sales store with leads, stages, deal values, touches, sequence state and suppression"
+        - "Structured-output LLM provider (optional; template fallback exists)"
+        - "Owner notification channel and time zone"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.sales.pipeline"
+      name: "Sales pipeline"
+      description: "Read open leads and find the ones that went quiet."
+      intent_examples: ["which deals are going cold"]
+      input_schema_ref: "schema://nova/deal-revival-nudges/stalled-query@0.1.0"
+      output_schema_ref: "schema://nova/deal-revival-nudges/stalled-lead@0.1.0"
+      risk_class: "low"
+      preconditions: ["touches logged for interactions"]
+      postconditions: ["no won, lost, suppressed or sequenced lead returned"]
+      tools:
+        - tool_id: "nova.sales.pipeline.stalled"
+          name: "Stalled leads"
+          description: "Open-stage leads quiet for at least N days, not in an active sequence, not suppressed, not flagged within the cooldown unless there was new activity."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/pipeline-stalled", operation: "stalled"}
+          input_schema_ref: "schema://nova/deal-revival-nudges/stalled-query@0.1.0"
+          output_schema_ref: "schema://nova/deal-revival-nudges/stalled-lead@0.1.0"
+          objects:
+            - {object_id: "nova.sales.lead", name: "Lead", description: "A sales prospect in an open stage", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/deal-revival-nudges/stalled-lead@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/deal-revival-nudges/stalled-query@0.1.0", output_schema_ref: "schema://nova/deal-revival-nudges/stalled-lead@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:pipeline:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["days_quiet at least quiet_days", "no excluded lead returned"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.sales.touches"
+      name: "Touch history"
+      description: "Read interaction history as metadata."
+      intent_examples: ["when did I last talk to Jane"]
+      input_schema_ref: "schema://nova/deal-revival-nudges/touch-query@0.1.0"
+      output_schema_ref: "schema://nova/deal-revival-nudges/touch-summary@0.1.0"
+      risk_class: "low"
+      preconditions: []
+      postconditions: ["newest touch first"]
+      tools:
+        - tool_id: "nova.sales.touches.recent"
+          name: "Recent touches"
+          description: "Last touches of a lead: channel, direction, kind, date, subject line and owner note."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/touches-recent", operation: "recent"}
+          input_schema_ref: "schema://nova/deal-revival-nudges/touch-query@0.1.0"
+          output_schema_ref: "schema://nova/deal-revival-nudges/touch-summary@0.1.0"
+          objects:
+            - {object_id: "nova.sales.touch", name: "Touch", description: "One interaction with a lead", operations: ["read"], scope_rules: ["one lead per call", "metadata only, no message bodies"], schema_ref: "schema://nova/deal-revival-nudges/touch-summary@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/deal-revival-nudges/touch-query@0.1.0", output_schema_ref: "schema://nova/deal-revival-nudges/touch-summary@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:touches:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["newest touch date equals last_touch_at"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.sales.revival"
+      name: "Revival suggestions"
+      description: "Grounded next-step suggestions and the no-repeat flag."
+      intent_examples: []
+      input_schema_ref: "schema://nova/deal-revival-nudges/suggest-request@0.1.0"
+      output_schema_ref: "schema://nova/deal-revival-nudges/suggestion@0.1.0"
+      risk_class: "low"
+      preconditions: ["lead is stalled"]
+      postconditions: ["every fact used appears in lead fields or touches"]
+      tools:
+        - tool_id: "nova.sales.revival.suggest"
+          name: "Suggest next step"
+          description: "Next step and an optional short opener grounded only in lead fields and touch metadata; touch text is untrusted data."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/revival-suggest", operation: "suggest"}
+          input_schema_ref: "schema://nova/deal-revival-nudges/suggest-request@0.1.0"
+          output_schema_ref: "schema://nova/deal-revival-nudges/suggestion@0.1.0"
+          objects:
+            - {object_id: "nova.sales.suggestion", name: "Suggestion", description: "Next step and opener for one lead", operations: ["create"], scope_rules: ["in memory; shown to the owner only"], schema_ref: "schema://nova/deal-revival-nudges/suggestion@0.1.0"}
+          variants:
+            - {variant_id: "llm", description: "Structured-output LLM, temperature at most 0.3; selected first", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/deal-revival-nudges/suggest-request@0.1.0", output_schema_ref: "schema://nova/deal-revival-nudges/suggestion@0.1.0", constraints: ["grounded facts only", "no invented prices, deadlines or urgency"], fallback_variant_id: "template"}
+            - {variant_id: "template", description: "Deterministic next step by stage; no opener; no LLM", compatible_environments: [], input_schema_ref: "schema://nova/deal-revival-nudges/suggest-request@0.1.0", output_schema_ref: "schema://nova/deal-revival-nudges/suggestion@0.1.0", constraints: ["uses less data than the llm variant"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:touches:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["lead context sent to the LLM provider (llm variant only)"], idempotency: "not_applicable", timeout_seconds: 60, max_attempts: 2, rate_limits: ["max_leads calls per run"], error_codes: ["llm_error", "ungrounded"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["facts_used all found in lead fields or touches"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.sales.revival.flag"
+          name: "Flag lead"
+          description: "Record that a lead was listed in a delivered digest, so it is not repeated within the cooldown."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/revival-flag", operation: "flag"}
+          input_schema_ref: "schema://nova/deal-revival-nudges/flag-request@0.1.0"
+          output_schema_ref: "schema://nova/deal-revival-nudges/flag-result@0.1.0"
+          objects:
+            - {object_id: "nova.sales.revival_flag", name: "Revival flag", description: "Last time a lead was nudged", operations: ["create", "update"], scope_rules: ["listed leads of a delivered digest only"], schema_ref: "schema://nova/deal-revival-nudges/flag-request@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/deal-revival-nudges/flag-request@0.1.0", output_schema_ref: "schema://nova/deal-revival-nudges/flag-result@0.1.0", constraints: ["after confirmed delivery only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:revival:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["revival flag written"], idempotency: "required", timeout_seconds: 10, max_attempts: 4, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["flagged plus already_flagged equals listed"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver the revival digest to the owner's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/deal-revival-nudges/digest-message@0.1.0"
+      output_schema_ref: "schema://nova/deal-revival-nudges/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt or unknown"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send plain text to the owner with an idempotency key."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/deal-revival-nudges/digest-message@0.1.0"
+          output_schema_ref: "schema://nova/deal-revival-nudges/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "The revival digest", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/deal-revival-nudges/digest-message@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/deal-revival-nudges/digest-message@0.1.0", output_schema_ref: "schema://nova/deal-revival-nudges/delivery@0.1.0", constraints: ["owner only", "plain text"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: ["one digest per owner per local date"], error_codes: ["channel_unavailable", "delivery_unknown"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

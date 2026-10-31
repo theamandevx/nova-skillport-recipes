@@ -1,0 +1,177 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.knowledge"
+    name: "Nova — Knowledge and research"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Scheduled scan of approved public sources for trending items on chosen topics, deduplicated and scored, stored as topic candidates with source links."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Owner-approved recurring job (schedule in the owner's time zone)"
+        - "At least one allowlisted public source reachable (news-aggregator search API and/or self-hosted SearXNG)"
+        - "Topic store in the owner's tenant; owner notification channel if digests are on"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.topics.sources"
+      name: "Trending sources"
+      description: "Read recent items for given keywords from allowlisted public sources."
+      intent_examples: ["refresh topics", "what's trending in AI agents"]
+      input_schema_ref: "schema://nova/trending-topics-radar/config@0.1.0"
+      output_schema_ref: "schema://nova/trending-topics-radar/source-item@0.1.0"
+      risk_class: "low"
+      preconditions: ["source on the allowlist"]
+      postconditions: ["every item has a title and an absolute http(s) URL"]
+      tools:
+        - tool_id: "nova.topics.sources.fetch"
+          name: "Fetch trending items"
+          description: "Return recent items (title, URL, snippet, published time, engagement where available)."
+          # Each variant carries its own binding_ref and protocol (Standard §2.3 callable-object contract); the tool-level binding is the default variant's.
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/topics/aggregator", operation: "fetch"}
+          input_schema_ref: "schema://nova/trending-topics-radar/config@0.1.0"
+          output_schema_ref: "schema://nova/trending-topics-radar/source-item@0.1.0"
+          objects:
+            - {object_id: "nova.topics.source_item", name: "Source item", description: "A public news item returned by a source", operations: ["read"], scope_rules: ["allowlisted public sources only", "transient — not stored as full text"], schema_ref: "schema://nova/trending-topics-radar/source-item@0.1.0"}
+          variants:
+            - {variant_id: "aggregator-api", binding_ref: "binding://nova/topics/aggregator", protocol: "OpenAPI", description: "Public tech-news aggregator search API (front page + keyword search); engagement points; no credentials", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/trending-topics-radar/config@0.1.0", output_schema_ref: "schema://nova/trending-topics-radar/source-item@0.1.0", constraints: ["read-only", "complementary source, not a fallback"], fallback_variant_id: null}
+            - {variant_id: "web-search", binding_ref: "binding://nova/topics/web-search", protocol: "OpenAPI", description: "Self-hosted SearXNG metasearch, news mode with time range; no engagement signal", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/trending-topics-radar/config@0.1.0", output_schema_ref: "schema://nova/trending-topics-radar/source-item@0.1.0", constraints: ["read-only", "complementary source, not a fallback"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sources:public:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["keywords sent to the source"], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 3, rate_limits: ["per-source rate TBD, within published terms"], error_codes: ["source_unavailable", "rate_limited", "malformed_response"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["items carry absolute URLs", "parse errors reported as source errors, not as an empty day"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.topics.notes"
+      name: "Topic notes"
+      description: "One-line note per item, restating only its title and snippet."
+      intent_examples: []
+      input_schema_ref: "schema://nova/trending-topics-radar/source-item@0.1.0"
+      output_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"
+      risk_class: "low"
+      preconditions: ["note_tier is cheap"]
+      postconditions: ["no fact in a note beyond the title and snippet"]
+      tools:
+        - tool_id: "nova.topics.notes.annotate"
+          name: "Annotate items"
+          description: "Write a note of at most 140 characters per item."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/topics/notes", operation: "annotate"}
+          input_schema_ref: "schema://nova/trending-topics-radar/source-item@0.1.0"
+          output_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"
+          objects:
+            - {object_id: "nova.topics.topic", name: "Topic candidate", description: "Stored trending item", operations: ["create"], scope_rules: ["note field only"], schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"}
+          variants:
+            - {variant_id: "cheap", description: "Default low-cost model; medium and pro tiers are not declared", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/trending-topics-radar/source-item@0.1.0", output_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0", constraints: ["no tier switch; skip notes if unavailable"], fallback_variant_id: null}
+            - {variant_id: "none", description: "Skip notes; no model call", compatible_environments: [], input_schema_ref: "schema://nova/trending-topics-radar/source-item@0.1.0", output_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0", constraints: [], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["llm:invoke:cheap"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["titles and snippets sent to the model provider"], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: ["at most max_new_items calls per run"], error_codes: ["tier_unavailable", "ungrounded_note"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every name and number in a note appears in title or snippet"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.topics.store"
+      name: "Topic store"
+      description: "Keep topic candidates and their status for the owner."
+      intent_examples: ["use topic 2", "dismiss topic 4"]
+      input_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"
+      output_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner's tenant exists"]
+      postconditions: ["one row per dedupe key"]
+      tools:
+        - tool_id: "nova.topics.store.add"
+          name: "Add topic"
+          description: "Insert a topic candidate; existing dedupe key returns the existing ID."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/topics/store-add", operation: "add"}
+          input_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"
+          output_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"
+          objects:
+            - {object_id: "nova.topics.topic", name: "Topic candidate", description: "Stored trending item", operations: ["create"], scope_rules: ["owner's tenant only", "status new on insert"], schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0", output_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0", constraints: ["idempotent on canonical URL hash + topic key"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["topics:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["topic row created"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["duplicate", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read-back count equals inserted count"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.topics.store.list"
+          name: "List topics"
+          description: "List candidates by topic key, status and age."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/topics/store-list", operation: "list"}
+          input_schema_ref: "schema://nova/trending-topics-radar/topic-query@0.1.0"
+          output_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"
+          objects:
+            - {object_id: "nova.topics.topic", name: "Topic candidate", description: "Stored trending item", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/trending-topics-radar/topic-query@0.1.0", output_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["topics:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["only own-tenant rows returned"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.topics.store.set_status"
+          name: "Set topic status"
+          description: "Mark a candidate used or dismissed on the owner's action."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/topics/store-status", operation: "set_status"}
+          input_schema_ref: "schema://nova/trending-topics-radar/topic-status@0.1.0"
+          output_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"
+          objects:
+            - {object_id: "nova.topics.topic", name: "Topic candidate", description: "Stored trending item", operations: ["update"], scope_rules: ["status field only", "owner action only"], schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/trending-topics-radar/topic-status@0.1.0", output_schema_ref: "schema://nova/trending-topics-radar/topic@0.1.0", constraints: ["status in new, used, dismissed"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["topics:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["topic status changed"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status read back equals requested status"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the owner's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/trending-topics-radar/digest@0.1.0"
+      output_schema_ref: "schema://nova/trending-topics-radar/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured", "inside quiet-hour window"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the ranked digest to the owner only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/trending-topics-radar/digest@0.1.0"
+          output_schema_ref: "schema://nova/trending-topics-radar/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the owner", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/trending-topics-radar/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/trending-topics-radar/digest@0.1.0", output_schema_ref: "schema://nova/trending-topics-radar/delivery@0.1.0", constraints: ["owner only", "quiet hours"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: ["one digest per run"], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received", "links equal stored topic URLs"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.ops.jobs"
+      name: "Job run registry"
+      description: "Record scheduled-run outcomes so failures and missed runs are visible."
+      intent_examples: []
+      input_schema_ref: "schema://nova/trending-topics-radar/run-record@0.1.0"
+      output_schema_ref: "schema://nova/trending-topics-radar/run-record@0.1.0"
+      risk_class: "low"
+      preconditions: []
+      postconditions: ["stale is never reported as healthy"]
+      tools:
+        - tool_id: "nova.ops.jobs.heartbeat"
+          name: "Record run"
+          description: "Write one run's status, counts and errors."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/ops/jobs-heartbeat", operation: "heartbeat"}
+          input_schema_ref: "schema://nova/trending-topics-radar/run-record@0.1.0"
+          output_schema_ref: "schema://nova/trending-topics-radar/run-record@0.1.0"
+          objects:
+            - {object_id: "nova.ops.run_record", name: "Run record", description: "Outcome of one scheduled run", operations: ["create"], scope_rules: ["owner's jobs only"], schema_ref: "schema://nova/trending-topics-radar/run-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/trending-topics-radar/run-record@0.1.0", output_schema_ref: "schema://nova/trending-topics-radar/run-record@0.1.0", constraints: ["written on every path, including failure"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["jobs:heartbeat"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["run record created"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["registry_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["record readable by run_id"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

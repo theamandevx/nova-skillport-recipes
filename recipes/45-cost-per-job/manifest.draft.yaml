@@ -1,0 +1,219 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.ops"
+    name: "Nova — Operations"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Attribute AI tokens and spend to the job that caused them, going forward only, with high-water marks, replay guards, honest cost bases and a daily spend-spike alert."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "organization"
+      prerequisites:
+        - "Read-only access to the automation hub's execution store"
+        - "Private copy of the assistant's session store"
+        - "Usage ledger and watermark table in the same database"
+        - "Operator-maintained price table with billing confirmation per provider tier"
+        - "Scheduler: every 15 minutes per collector and once a day for the spike check"
+        - "Owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.usage.sources"
+      name: "Usage sources"
+      description: "Read AI call records from each source, read-only, with schema-drift refusal."
+      intent_examples: ["which job costs the most?"]
+      input_schema_ref: "schema://nova/cost-per-job/run-request@0.1.0"
+      output_schema_ref: "schema://nova/cost-per-job/source-record@0.1.0"
+      risk_class: "medium"
+      preconditions: ["read-only handle or private copy available"]
+      postconditions: ["schema match confirmed before any read", "records strictly after the watermark"]
+      tools:
+        - tool_id: "nova.usage.sources.check_schema"
+          name: "Check source schema"
+          description: "Compare the source's tables, primary key and fields with the expected schema; drift refuses the run."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/usage/source-{variant}", operation: "check_schema"}
+          input_schema_ref: "schema://nova/cost-per-job/run-request@0.1.0"
+          output_schema_ref: "schema://nova/cost-per-job/schema-check@0.1.0"
+          objects:
+            - {object_id: "nova.usage.source_store", name: "Source store", description: "Hub execution store or assistant session copy", operations: ["read"], scope_rules: ["read-only", "schema metadata only"], schema_ref: "schema://nova/cost-per-job/schema-check@0.1.0"}
+          variants:
+            - {variant_id: "automation-hub", description: "Hub execution store opened read-only", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/cost-per-job/run-request@0.1.0", output_schema_ref: "schema://nova/cost-per-job/schema-check@0.1.0", constraints: ["binding binding://nova/usage/source-automation-hub (UNVERIFIED)", "read-only"], fallback_variant_id: null}
+            - {variant_id: "assistant", description: "Private copy of the assistant's session store", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/cost-per-job/run-request@0.1.0", output_schema_ref: "schema://nova/cost-per-job/schema-check@0.1.0", constraints: ["binding binding://nova/usage/source-assistant (UNVERIFIED)", "copy, never the live file"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (collector service identity)", required_scopes: ["usage:sources:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 2, rate_limits: ["one run per collector at a time"], error_codes: ["drift", "source_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["primary key unchanged", "every expected field present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.usage.sources.read_new"
+          name: "Read new calls"
+          description: "Return calls after the watermark, ordered and bounded, normalised to tokens, model, provider, time and job; excluded jobs dropped and counted; no prompt text."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/usage/source-{variant}", operation: "read_new"}
+          input_schema_ref: "schema://nova/cost-per-job/watermark@0.1.0"
+          output_schema_ref: "schema://nova/cost-per-job/source-record@0.1.0"
+          objects:
+            - {object_id: "nova.usage.source_store", name: "Source store", description: "AI call records", operations: ["read"], scope_rules: ["read-only", "token usage fields only", "bounded batch"], schema_ref: "schema://nova/cost-per-job/source-record@0.1.0"}
+          variants:
+            - {variant_id: "automation-hub", description: "Token usage from AI-call steps; meta.job hub:<workflow name>", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/cost-per-job/watermark@0.1.0", output_schema_ref: "schema://nova/cost-per-job/source-record@0.1.0", constraints: ["read-only", "exclusion list applied"], fallback_variant_id: null}
+            - {variant_id: "assistant", description: "Token usage from the session copy; meta.job assistant:<job id> or assistant:chat; cost is the assistant's estimate", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/cost-per-job/watermark@0.1.0", output_schema_ref: "schema://nova/cost-per-job/source-record@0.1.0", constraints: ["copy, never the live file"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (collector service identity)", required_scopes: ["usage:sources:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 2, rate_limits: ["batch at most max_records_per_run + 1"], error_codes: ["source_unavailable", "unreadable_usage"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["references strictly greater than the watermark", "no prompt or completion text"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.usage.watermark"
+      name: "High-water marks"
+      description: "Per-collector watermark; baseline on first run; advanced only with the ledger commit; rebaseline only with approval."
+      intent_examples: []
+      input_schema_ref: "schema://nova/cost-per-job/run-request@0.1.0"
+      output_schema_ref: "schema://nova/cost-per-job/watermark@0.1.0"
+      risk_class: "low"
+      preconditions: []
+      postconditions: ["watermark never ahead of the source maximum"]
+      tools:
+        - tool_id: "nova.usage.watermark.get"
+          name: "Get watermark"
+          description: "Return the collector's watermark, or set a baseline at the source maximum when none exists (emitting nothing)."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/usage/watermark", operation: "get"}
+          input_schema_ref: "schema://nova/cost-per-job/run-request@0.1.0"
+          output_schema_ref: "schema://nova/cost-per-job/watermark@0.1.0"
+          objects:
+            - {object_id: "nova.usage.watermark", name: "Watermark", description: "Last processed source reference", operations: ["read", "create"], scope_rules: ["one per collector", "create only when absent"], schema_ref: "schema://nova/cost-per-job/watermark@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/cost-per-job/run-request@0.1.0", output_schema_ref: "schema://nova/cost-per-job/watermark@0.1.0", constraints: ["going forward only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (collector service identity)", required_scopes: ["usage:watermark:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["baseline watermark created on first run"], idempotency: "required", timeout_seconds: 5, max_attempts: 2, rate_limits: [], error_codes: ["ahead_of_source"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["first run writes zero usage rows"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.usage.watermark.rebaseline"
+          name: "Rebaseline"
+          description: "Move the watermark to the source's current maximum, skipping a gap; requires an operator approval ID; the gap is disclosed."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/usage/watermark", operation: "rebaseline"}
+          input_schema_ref: "schema://nova/cost-per-job/run-request@0.1.0"
+          output_schema_ref: "schema://nova/cost-per-job/watermark@0.1.0"
+          objects:
+            - {object_id: "nova.usage.watermark", name: "Watermark", description: "Last processed source reference", operations: ["update"], scope_rules: ["approval ID required", "origin set to rebaseline"], schema_ref: "schema://nova/cost-per-job/watermark@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/cost-per-job/run-request@0.1.0", output_schema_ref: "schema://nova/cost-per-job/watermark@0.1.0", constraints: ["human-approved only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["usage:watermark:rebaseline"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["a window of usage is permanently skipped"], idempotency: "required", timeout_seconds: 5, max_attempts: 1, rate_limits: [], error_codes: ["approval_missing"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["watermark origin rebaseline with approval ID"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.usage.pricing"
+      name: "Usage pricing"
+      description: "Price records honestly: confirmed tiers billed; unconfirmed and subscription tiers at zero with list price kept."
+      intent_examples: []
+      input_schema_ref: "schema://nova/cost-per-job/source-record@0.1.0"
+      output_schema_ref: "schema://nova/cost-per-job/usage-record@0.1.0"
+      risk_class: "low"
+      preconditions: ["price table loaded"]
+      postconditions: ["every row carries a cost basis"]
+      tools:
+        - tool_id: "nova.usage.pricing.price"
+          name: "Price record"
+          description: "Return cost_usd, cost_basis and list price for one record from the date-stamped price table."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/usage/pricing", operation: "price"}
+          input_schema_ref: "schema://nova/cost-per-job/source-record@0.1.0"
+          output_schema_ref: "schema://nova/cost-per-job/usage-record@0.1.0"
+          objects:
+            - {object_id: "nova.usage.price_table", name: "Price table", description: "Per-model token prices with billing confirmation", operations: ["read"], scope_rules: ["operator-maintained"], schema_ref: "schema://nova/cost-per-job/price-table@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/cost-per-job/source-record@0.1.0", output_schema_ref: "schema://nova/cost-per-job/usage-record@0.1.0", constraints: ["unconfirmed tier priced at 0 with list price", "tier change only with operator confirmation"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["usage:pricing:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 1, rate_limits: [], error_codes: ["price_table_missing", "unpriced_model"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["cost_usd is 0 when basis is unconfirmed_tier or subscription_included"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.usage.ledger"
+      name: "Usage ledger"
+      description: "Append-only ledger; rows and watermark committed in one transaction; per-job aggregation."
+      intent_examples: ["cost per job over the last 30 days"]
+      input_schema_ref: "schema://nova/cost-per-job/usage-record@0.1.0"
+      output_schema_ref: "schema://nova/cost-per-job/run-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["replay guard passed"]
+      postconditions: ["no duplicate source_ref", "watermark equals last committed reference"]
+      tools:
+        - tool_id: "nova.usage.ledger.commit_batch"
+          name: "Commit batch"
+          description: "In one transaction, append rows (unique source and source_ref) and advance the watermark."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/usage/ledger", operation: "commit_batch"}
+          input_schema_ref: "schema://nova/cost-per-job/usage-record@0.1.0"
+          output_schema_ref: "schema://nova/cost-per-job/run-result@0.1.0"
+          objects:
+            - {object_id: "nova.usage.record", name: "Usage row", description: "One attributed AI call", operations: ["create"], scope_rules: ["append-only", "no update or delete"], schema_ref: "schema://nova/cost-per-job/usage-record@0.1.0"}
+            - {object_id: "nova.usage.watermark", name: "Watermark", description: "Last processed source reference", operations: ["update"], scope_rules: ["same transaction as the rows"], schema_ref: "schema://nova/cost-per-job/watermark@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/cost-per-job/usage-record@0.1.0", output_schema_ref: "schema://nova/cost-per-job/run-result@0.1.0", constraints: ["single transaction", "within replay guards"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD (collector service identity)", required_scopes: ["usage:ledger:append", "usage:watermark:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["ledger rows appended", "watermark advanced"], idempotency: "required", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["duplicate_key", "transaction_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["re-read count and cost sum equal the batch"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.usage.ledger.by_job"
+          name: "Cost by job"
+          description: "Cost, list price and tokens per job over a window; unattributed rows per module; unmeasurable jobs flagged."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/usage/ledger", operation: "by_job"}
+          input_schema_ref: "schema://nova/cost-per-job/run-request@0.1.0"
+          output_schema_ref: "schema://nova/cost-per-job/job-cost@0.1.0"
+          objects:
+            - {object_id: "nova.usage.record", name: "Usage row", description: "One attributed AI call", operations: ["read"], scope_rules: ["tenant ledger only"], schema_ref: "schema://nova/cost-per-job/usage-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/cost-per-job/run-request@0.1.0", output_schema_ref: "schema://nova/cost-per-job/job-cost@0.1.0", constraints: ["read-only", "estimates labelled"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["usage:ledger:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["ledger_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["sum of per-job cost equals the ledger total"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.usage.spike"
+      name: "Spend-spike check"
+      description: "Daily: trailing 24 h spend vs the 7-day daily average per job and in total; alert at about 2.5x above a floor."
+      intent_examples: ["did anything start costing more?"]
+      input_schema_ref: "schema://nova/cost-per-job/job-cost@0.1.0"
+      output_schema_ref: "schema://nova/cost-per-job/spike-check@0.1.0"
+      risk_class: "low"
+      preconditions: ["ledger readable"]
+      postconditions: ["one alert per scope per day at most"]
+      tools:
+        - tool_id: "nova.usage.spike.check"
+          name: "Check spikes"
+          description: "Verdicts normal, spike, new_spend or insufficient_history; zero-cost bases checked on list price as informational."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/usage/spike", operation: "check"}
+          input_schema_ref: "schema://nova/cost-per-job/job-cost@0.1.0"
+          output_schema_ref: "schema://nova/cost-per-job/spike-check@0.1.0"
+          objects:
+            - {object_id: "nova.usage.record", name: "Usage row", description: "Ledger rows aggregated per day", operations: ["read"], scope_rules: ["tenant ledger only"], schema_ref: "schema://nova/cost-per-job/usage-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/cost-per-job/job-cost@0.1.0", output_schema_ref: "schema://nova/cost-per-job/spike-check@0.1.0", constraints: ["ratio 2.5", "floor TBD", "minimum 3 days history"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["usage:ledger:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "required", timeout_seconds: 30, max_attempts: 2, rate_limits: ["once a day"], error_codes: ["ledger_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["numbers recomputed from raw ledger rows"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver guard, drift and spike alerts to the owner's channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/cost-per-job/spike-check@0.1.0"
+      output_schema_ref: "schema://nova/cost-per-job/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send alerts with job names, amounts and reasons only; send-then-mark; refusal alerts repeat at most daily."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/cost-per-job/spike-check@0.1.0"
+          output_schema_ref: "schema://nova/cost-per-job/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "An alert to the owner", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/cost-per-job/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/cost-per-job/spike-check@0.1.0", output_schema_ref: "schema://nova/cost-per-job/delivery@0.1.0", constraints: ["owner only", "deduplicated per scope and day"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["alert delivered to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

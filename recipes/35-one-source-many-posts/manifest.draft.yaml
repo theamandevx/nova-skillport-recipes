@@ -1,0 +1,217 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.content"
+    name: "Nova — Content"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Turn one article, document or idea into a linked set of platform-specific drafts (LinkedIn, X) in the approval queue; nothing is published."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Voice profile (style guide; 0-5 example posts)"
+        - "A ready cheap-tier model (message sheet) and pro-tier model (drafting); medium variants optional"
+        - "Content approval queue in the user's tenant"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.research.fetch"
+      name: "Page fetch"
+      description: "Read a public article as plain text, with title and publisher for attribution."
+      intent_examples: []
+      input_schema_ref: "schema://nova/one-source-many-posts/fetch-input@0.1.0"
+      output_schema_ref: "schema://nova/one-source-many-posts/page@0.1.0"
+      risk_class: "low"
+      preconditions: ["public URL"]
+      postconditions: ["usable flag set"]
+      tools:
+        - tool_id: "nova.research.fetch.get"
+          name: "Fetch page"
+          description: "HTTP GET, 2 MB cap, HTML stripped to text, no logins or paywalls."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/research/fetch", operation: "get"}
+          input_schema_ref: "schema://nova/one-source-many-posts/fetch-input@0.1.0"
+          output_schema_ref: "schema://nova/one-source-many-posts/page@0.1.0"
+          objects:
+            - {object_id: "nova.research.source", name: "Fetched page", description: "Public article text (transient)", operations: ["read"], scope_rules: ["public pages only", "not stored beyond key-point spans"], schema_ref: "schema://nova/one-source-many-posts/page@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/one-source-many-posts/fetch-input@0.1.0", output_schema_ref: "schema://nova/one-source-many-posts/page@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["web:fetch:public"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["HTTP request to the source site"], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: [], error_codes: ["http_error", "login_wall", "paywall", "too_little_text"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["usable is true or the user is asked for pasted text"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.voice"
+      name: "Voice profile"
+      description: "Hold the user's writing voice."
+      intent_examples: []
+      input_schema_ref: "schema://nova/one-source-many-posts/voice-query@0.1.0"
+      output_schema_ref: "schema://nova/one-source-many-posts/voice-profile@0.1.0"
+      risk_class: "low"
+      preconditions: ["requesting user identified"]
+      postconditions: ["guide returned; voice_tuned false when no examples"]
+      tools:
+        - tool_id: "nova.content.voice.get_profile"
+          name: "Get voice profile"
+          description: "Return style guide, examples, banned phrases and brand colours."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/voice", operation: "get_profile"}
+          input_schema_ref: "schema://nova/one-source-many-posts/voice-query@0.1.0"
+          output_schema_ref: "schema://nova/one-source-many-posts/voice-profile@0.1.0"
+          objects:
+            - {object_id: "nova.content.voice_profile", name: "Voice profile", description: "The user's writing style and examples", operations: ["read"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/one-source-many-posts/voice-profile@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/one-source-many-posts/voice-query@0.1.0", output_schema_ref: "schema://nova/one-source-many-posts/voice-profile@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:voice:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["profile_missing"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["guide present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.atomize"
+      name: "Source atomizer"
+      description: "Break one source into a central idea, key points with verbatim spans, and a distinct assignment per planned draft."
+      intent_examples: ["turn this article into a LinkedIn post and a tweet", "repurpose this for all my channels"]
+      input_schema_ref: "schema://nova/one-source-many-posts/request@0.1.0"
+      output_schema_ref: "schema://nova/one-source-many-posts/atomize-result@0.1.0"
+      risk_class: "low"
+      preconditions: ["usable source text or idea"]
+      postconditions: ["every span verbatim in the source", "each planned draft has at least one key point"]
+      tools:
+        - tool_id: "nova.content.atomize.plan"
+          name: "Plan the set"
+          description: "LLM message sheet and per-platform assignments; source text treated as data."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/atomize", operation: "plan"}
+          input_schema_ref: "schema://nova/one-source-many-posts/plan-input@0.1.0"
+          output_schema_ref: "schema://nova/one-source-many-posts/core-sheet@0.1.0"
+          objects:
+            - {object_id: "nova.content.core_sheet", name: "Message sheet", description: "Central idea, key points and assignments for one set", operations: ["create"], scope_rules: ["run and set only"], schema_ref: "schema://nova/one-source-many-posts/core-sheet@0.1.0"}
+          variants:
+            - {variant_id: "cheap", description: "Default low-cost model", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/one-source-many-posts/plan-input@0.1.0", output_schema_ref: "schema://nova/one-source-many-posts/core-sheet@0.1.0", constraints: ["no automatic tier switch"], fallback_variant_id: null}
+            - {variant_id: "medium", description: "Explicit choice for long or dense sources", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/one-source-many-posts/plan-input@0.1.0", output_schema_ref: "schema://nova/one-source-many-posts/core-sheet@0.1.0", constraints: ["explicit selection only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["llm:invoke:cheap", "llm:invoke:medium"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["source text sent to the model provider"], idempotency: "not_applicable", timeout_seconds: 45, max_attempts: 2, rate_limits: ["per-run token cap TBD"], error_codes: ["tier_unavailable", "non_verbatim_span", "too_few_points"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["spans verbatim", "assignments distinct per platform"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.draft"
+      name: "Post drafting"
+      description: "Write one draft for one platform from its assigned key points."
+      intent_examples: []
+      input_schema_ref: "schema://nova/one-source-many-posts/draft-input@0.1.0"
+      output_schema_ref: "schema://nova/one-source-many-posts/draft@0.1.0"
+      risk_class: "medium"
+      preconditions: ["message sheet built", "selected tier ready"]
+      postconditions: ["text and image prompt parsed per draft"]
+      tools:
+        - tool_id: "nova.content.draft.write_platform"
+          name: "Write platform draft"
+          description: "LinkedIn long-form or X short-form from assigned points only; text and image prompt split by a delimiter line."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/draft-platform", operation: "write_platform"}
+          input_schema_ref: "schema://nova/one-source-many-posts/draft-input@0.1.0"
+          output_schema_ref: "schema://nova/one-source-many-posts/draft@0.1.0"
+          objects:
+            - {object_id: "nova.content.draft", name: "Draft", description: "One platform draft (not yet queued)", operations: ["create"], scope_rules: ["run only until queued"], schema_ref: "schema://nova/one-source-many-posts/draft@0.1.0"}
+          variants:
+            - {variant_id: "pro", description: "Default; reasoning-capable top tier; ~4000 output-token headroom; empty completion = failure", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/one-source-many-posts/draft-input@0.1.0", output_schema_ref: "schema://nova/one-source-many-posts/draft@0.1.0", constraints: ["no automatic tier switch", "max 6 drafts per run"], fallback_variant_id: null}
+            - {variant_id: "medium", description: "Explicit choice only; tier recorded", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/one-source-many-posts/draft-input@0.1.0", output_schema_ref: "schema://nova/one-source-many-posts/draft@0.1.0", constraints: ["explicit selection only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["llm:invoke:pro", "llm:invoke:medium"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["key points, angle and voice profile sent to the model provider"], idempotency: "not_applicable", timeout_seconds: 90, max_attempts: 2, rate_limits: ["max 2 drafts in parallel"], error_codes: ["tier_unavailable", "empty_completion", "parse_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["text present", "key_point_ids non-empty"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.verify"
+      name: "Draft checks"
+      description: "Platform format rules plus grounding, attribution, copying and sibling-duplication checks."
+      intent_examples: []
+      input_schema_ref: "schema://nova/one-source-many-posts/draft@0.1.0"
+      output_schema_ref: "schema://nova/one-source-many-posts/verify-report@0.1.0"
+      risk_class: "low"
+      preconditions: ["draft parsed"]
+      postconditions: ["pass, or failures listed per draft"]
+      tools:
+        - tool_id: "nova.content.verify.format"
+          name: "Check format"
+          description: "Apply the LinkedIn or X profile, including image-prompt ratio."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/verify-format", operation: "format"}
+          input_schema_ref: "schema://nova/one-source-many-posts/draft@0.1.0"
+          output_schema_ref: "schema://nova/one-source-many-posts/verify-report@0.1.0"
+          objects:
+            - {object_id: "nova.content.draft", name: "Draft", description: "One platform draft", operations: ["read"], scope_rules: ["run only"], schema_ref: "schema://nova/one-source-many-posts/draft@0.1.0"}
+          variants:
+            - {variant_id: "linkedin", description: "Hook <= 210, 1300-1900 chars, 0-3 hashtags, no link in body, 4:5 portrait image prompt", compatible_environments: [], input_schema_ref: "schema://nova/one-source-many-posts/draft@0.1.0", output_schema_ref: "schema://nova/one-source-many-posts/verify-report@0.1.0", constraints: ["deterministic"], fallback_variant_id: null}
+            - {variant_id: "x", description: "<= 270 chars, one idea, no hashtags, no links incl. bare domains, 16:9 image prompt with central safe zone and <= 8-word headline", compatible_environments: [], input_schema_ref: "schema://nova/one-source-many-posts/draft@0.1.0", output_schema_ref: "schema://nova/one-source-many-posts/verify-report@0.1.0", constraints: ["deterministic"], fallback_variant_id: null}
+          authorization: {required: false, identity_provider: "TBD", required_scopes: [], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 1, rate_limits: [], error_codes: ["length_out_of_range", "hook_too_long", "too_many_hashtags", "link_present", "hashtag_present", "banned_phrase", "image_ratio"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["all profile rules pass"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.verify.claims"
+          name: "Check claims"
+          description: "Specifics in spans or angle; attribution for third-party sources; no copied run > 25 words; sibling overlap < 0.6; no invented first-person claims."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/verify-claims", operation: "claims"}
+          input_schema_ref: "schema://nova/one-source-many-posts/draft@0.1.0"
+          output_schema_ref: "schema://nova/one-source-many-posts/verify-report@0.1.0"
+          objects:
+            - {object_id: "nova.content.draft", name: "Draft", description: "One platform draft and its siblings", operations: ["read"], scope_rules: ["run only"], schema_ref: "schema://nova/one-source-many-posts/draft@0.1.0"}
+          variants:
+            - {variant_id: "rules", description: "Default deterministic checks", compatible_environments: [], input_schema_ref: "schema://nova/one-source-many-posts/draft@0.1.0", output_schema_ref: "schema://nova/one-source-many-posts/verify-report@0.1.0", constraints: [], fallback_variant_id: null}
+            - {variant_id: "llm-check", description: "Optional, on a model different from the drafter; can only flag", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/one-source-many-posts/draft@0.1.0", output_schema_ref: "schema://nova/one-source-many-posts/verify-report@0.1.0", constraints: ["operator-enabled only", "model differs from drafter"], fallback_variant_id: null}
+          authorization: {required: false, identity_provider: "TBD", required_scopes: [], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 1, rate_limits: [], error_codes: ["ungrounded_specific", "missing_attribution", "verbatim_copy", "sibling_duplicate", "invented_experience"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["100% of queued drafts pass"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.queue"
+      name: "Content approval queue"
+      description: "Hold the linked set of drafts and each draft's approval state."
+      intent_examples: ["approve the LinkedIn one, reject the X one"]
+      input_schema_ref: "schema://nova/one-source-many-posts/post@0.1.0"
+      output_schema_ref: "schema://nova/one-source-many-posts/post@0.1.0"
+      risk_class: "medium"
+      preconditions: ["user's tenant exists"]
+      postconditions: ["approval per draft; nothing published by this recipe"]
+      tools:
+        - tool_id: "nova.content.queue.save_draft"
+          name: "Save draft"
+          description: "Insert one draft with its set_id; an existing client key returns the existing post."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/queue-save", operation: "save_draft"}
+          input_schema_ref: "schema://nova/one-source-many-posts/post@0.1.0"
+          output_schema_ref: "schema://nova/one-source-many-posts/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Queued draft in a linked set", operations: ["create"], scope_rules: ["user's tenant only", "status draft on insert"], schema_ref: "schema://nova/one-source-many-posts/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/one-source-many-posts/post@0.1.0", output_schema_ref: "schema://nova/one-source-many-posts/post@0.1.0", constraints: ["idempotent on client key"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:queue:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["queue row created"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: ["max 6 rows per run"], error_codes: ["duplicate", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["set read back with matching count and hashes"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.queue.edit"
+          name: "Edit draft"
+          description: "Change one non-published draft; voids that draft's approval only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/queue-edit", operation: "edit"}
+          input_schema_ref: "schema://nova/one-source-many-posts/post@0.1.0"
+          output_schema_ref: "schema://nova/one-source-many-posts/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Queued draft", operations: ["update"], scope_rules: ["hook, body, image_prompt only", "not when published"], schema_ref: "schema://nova/one-source-many-posts/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/one-source-many-posts/post@0.1.0", output_schema_ref: "schema://nova/one-source-many-posts/post@0.1.0", constraints: ["siblings unaffected"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:queue:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["draft content changed"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["already_published", "not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["new content hash stored"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.queue.set_status"
+          name: "Set draft status"
+          description: "approved or rejected per draft on the user's action."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/queue-status", operation: "set_status"}
+          input_schema_ref: "schema://nova/one-source-many-posts/post-status@0.1.0"
+          output_schema_ref: "schema://nova/one-source-many-posts/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Queued draft", operations: ["update"], scope_rules: ["status only", "one draft per call"], schema_ref: "schema://nova/one-source-many-posts/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/one-source-many-posts/post-status@0.1.0", output_schema_ref: "schema://nova/one-source-many-posts/post@0.1.0", constraints: ["user approval record required for approved"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:queue:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["draft status changed"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["invalid_transition", "approval_missing"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status read back", "siblings unchanged"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

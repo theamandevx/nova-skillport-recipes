@@ -1,0 +1,141 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.memory"
+    name: "Nova — Memory and notes"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Screen and save one user-requested fact into the user's persistent, character-limited memory."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Per-user persistent memory store with read, add, replace and remove, reporting usage against a character limit"
+        - "LLM for classification and drafting"
+        - "Owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.memory.screen"
+      name: "Memory screen"
+      description: "Classify a candidate note and decide whether it may enter free-form memory, and which target."
+      intent_examples: ["remember that I prefer mornings", "remember Jane owes me 40 dollars"]
+      input_schema_ref: "schema://nova/remember-a-note/request@0.1.0"
+      output_schema_ref: "schema://nova/remember-a-note/screen-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["explicit remember request"]
+      postconditions: ["route is memory, ledger, records, reminder or refuse"]
+      tools:
+        - tool_id: "nova.memory.screen.classify"
+          name: "Classify note"
+          description: "Rule patterns for secrets, money, IDs and special-category data, plus LLM classification; rules override the LLM."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/memory/screen", operation: "classify"}
+          input_schema_ref: "schema://nova/remember-a-note/request@0.1.0"
+          output_schema_ref: "schema://nova/remember-a-note/screen-result@0.1.0"
+          objects:
+            - {object_id: "nova.memory.screen_result", name: "Screen result", description: "Category, route, target and reason for one note", operations: ["create"], scope_rules: ["this run only", "note text not logged"], schema_ref: "schema://nova/remember-a-note/screen-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/remember-a-note/request@0.1.0", output_schema_ref: "schema://nova/remember-a-note/screen-result@0.1.0", constraints: ["rule match forbids route memory"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["memory:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: [], error_codes: ["restricted_content", "permission_change", "unclear"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["secret, money, ID and special-category fixtures never routed to memory"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.memory.store"
+      name: "Persistent memory"
+      description: "The user's small, character-limited memory loaded into every conversation, with a user-profile target and an agent-notes target."
+      intent_examples: ["remember that", "from now on reply in Spanish", "forget that"]
+      input_schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0"
+      output_schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0"
+      risk_class: "medium"
+      preconditions: ["store bound to the requesting user"]
+      postconditions: ["usage within the character limit", "read-after-write matches"]
+      tools:
+        - tool_id: "nova.memory.store.read"
+          name: "Read memory"
+          description: "Return entries and usage for one target."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/memory/read", operation: "read"}
+          input_schema_ref: "schema://nova/remember-a-note/memory-target@0.1.0"
+          output_schema_ref: "schema://nova/remember-a-note/memory-usage@0.1.0"
+          objects:
+            - {object_id: "nova.memory.entry", name: "Memory entry", description: "One short dated fact or instruction", operations: ["read"], scope_rules: ["requesting user's memory only"], schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/remember-a-note/memory-target@0.1.0", output_schema_ref: "schema://nova/remember-a-note/memory-usage@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["memory:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["usage figures present", "only own entries returned"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.memory.store.add"
+          name: "Add entry"
+          description: "Append one screened, non-duplicate entry that fits the limit."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/memory/add", operation: "add"}
+          input_schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0"
+          output_schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0"
+          objects:
+            - {object_id: "nova.memory.entry", name: "Memory entry", description: "One short dated fact or instruction", operations: ["create"], scope_rules: ["requesting user's memory only", "screen route must be memory"], schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0"}
+          variants:
+            - {variant_id: "user-profile", description: "Facts about the user: preferences, routines, people they mention", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0", output_schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0", constraints: ["within the user-profile character limit"], fallback_variant_id: null}
+            - {variant_id: "agent-notes", description: "Standing instructions and setup facts for the agent", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0", output_schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0", constraints: ["within the agent-notes character limit", "never grants permissions"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["memory:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["entry loaded into every later conversation"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: ["one write at a time per user"], error_codes: ["over_limit", "duplicate", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read-after-write finds the exact text"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.memory.store.replace"
+          name: "Replace entry"
+          description: "Replace the text of one conflicting entry after the user approves."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/memory/replace", operation: "replace"}
+          input_schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0"
+          output_schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0"
+          objects:
+            - {object_id: "nova.memory.entry", name: "Memory entry", description: "One short dated fact or instruction", operations: ["update"], scope_rules: ["one entry named in the approval", "text field only"], schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0"}
+          variants:
+            - {variant_id: "user-profile", description: "Replace in the user-profile target", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0", output_schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0", constraints: ["approval required"], fallback_variant_id: null}
+            - {variant_id: "agent-notes", description: "Replace in the agent-notes target", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0", output_schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0", constraints: ["approval required"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["memory:update"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["old fact removed from future context"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: ["one write at a time per user"], error_codes: ["not_found", "over_limit"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["new text present", "old text absent"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.memory.store.remove"
+          name: "Remove entry"
+          description: "Remove one entry the user names, to make room or to correct a fact."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/memory/remove", operation: "remove"}
+          input_schema_ref: "schema://nova/remember-a-note/memory-entry-ref@0.1.0"
+          output_schema_ref: "schema://nova/remember-a-note/memory-usage@0.1.0"
+          objects:
+            - {object_id: "nova.memory.entry", name: "Memory entry", description: "One short dated fact or instruction", operations: ["delete"], scope_rules: ["one entry named in the approval"], schema_ref: "schema://nova/remember-a-note/memory-entry@0.1.0"}
+          variants:
+            - {variant_id: "user-profile", description: "Remove from the user-profile target", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/remember-a-note/memory-entry-ref@0.1.0", output_schema_ref: "schema://nova/remember-a-note/memory-usage@0.1.0", constraints: ["approval required"], fallback_variant_id: null}
+            - {variant_id: "agent-notes", description: "Remove from the agent-notes target", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/remember-a-note/memory-entry-ref@0.1.0", output_schema_ref: "schema://nova/remember-a-note/memory-usage@0.1.0", constraints: ["approval required"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["memory:delete"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["entry removed from future context"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: ["one write at a time per user"], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["entry absent on re-read"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/remember-a-note/memory-save-result@0.1.0"
+      output_schema_ref: "schema://nova/remember-a-note/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Confirm what was saved, rerouted or refused; never echo saved text in a shared channel."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/remember-a-note/memory-save-result@0.1.0"
+          output_schema_ref: "schema://nova/remember-a-note/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/remember-a-note/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/remember-a-note/memory-save-result@0.1.0", output_schema_ref: "schema://nova/remember-a-note/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

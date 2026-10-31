@@ -1,0 +1,142 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.ops"
+    name: "Nova — Operations"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Append-only, hash-chained, searchable audit trail of everything the assistant does; triggers for domain changes, an authenticated gateway for the rest; no secrets or payloads."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "PostgreSQL-compatible database with triggers and security-definer functions"
+        - "HTTPS logging gateway with per-writer credentials"
+        - "Owner dashboard with sign-in"
+        - "Scheduler for integrity verification and retention"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.activity.log"
+      name: "Activity log"
+      description: "Append, search and verify the owner's audit trail."
+      intent_examples: ["what did you do yesterday", "show failed actions this week"]
+      input_schema_ref: "schema://nova/activity-log/activity-input@0.1.0"
+      output_schema_ref: "schema://nova/activity-log/activity-entry@0.1.0"
+      risk_class: "medium"
+      preconditions: ["logging function installed", "writer registered with its sources"]
+      postconditions: ["entries append-only and hash-chained", "no secrets or payloads stored"]
+      tools:
+        - tool_id: "nova.activity.log.append"
+          name: "Append entry"
+          description: "Validate, authorise writer-to-source, redact, deduplicate and append one chained entry."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/activity/append-fn", operation: "append"}
+          input_schema_ref: "schema://nova/activity-log/activity-input@0.1.0"
+          output_schema_ref: "schema://nova/activity-log/append-result@0.1.0"
+          objects:
+            - {object_id: "nova.ops.activity_entry", name: "Activity entry", description: "One append-only record of an action", operations: ["create"], scope_rules: ["owner's tenant only", "writer may append only for its declared sources", "no UPDATE for any role"], schema_ref: "schema://nova/activity-log/activity-entry@0.1.0"}
+            - {object_id: "nova.ops.activity_writer", name: "Writer registration", description: "A registered writer and its allowed sources and meta keys", operations: ["read"], scope_rules: ["operator-managed"], schema_ref: "schema://nova/activity-log/writer@0.1.0"}
+          variants:
+            - {variant_id: "db-trigger", description: "AFTER trigger on a domain table calls the logging function in the same transaction; failure rolls back the domain change", compatible_environments: ["same database as the domain tables"], input_schema_ref: "schema://nova/activity-log/activity-input@0.1.0", output_schema_ref: "schema://nova/activity-log/append-result@0.1.0", constraints: ["atomic with the domain change"], fallback_variant_id: null}
+            - {variant_id: "in-transaction", description: "Another recipe's database function calls the logging function inside its own transaction", compatible_environments: ["same database"], input_schema_ref: "schema://nova/activity-log/activity-input@0.1.0", output_schema_ref: "schema://nova/activity-log/append-result@0.1.0", constraints: ["atomic with the caller's change"], fallback_variant_id: null}
+            - {variant_id: "gateway", description: "Authenticated HTTPS endpoint (binding://nova/activity/gateway) for actions without a domain table; per-writer credentials", compatible_environments: ["any writer with HTTPS"], input_schema_ref: "schema://nova/activity-log/activity-input@0.1.0", output_schema_ref: "schema://nova/activity-log/append-result@0.1.0", constraints: ["request_key required", "60 appends per minute per writer", "never falls back to direct database writes"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["activity:append"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["activity entry created"], idempotency: "required", timeout_seconds: 2, max_attempts: 4, rate_limits: ["60 per minute per gateway writer"], error_codes: ["401_unauthenticated", "403_source_not_bound", "422_invalid", "422_payload_detected", "429_rate_limited", "503_lock_timeout"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["prev_hash equals previous entry_hash", "post-redaction scan clean", "rolled-back domain change leaves no entry"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.activity.log.feed"
+          name: "Search feed"
+          description: "Text search and filters (source, action, status incl. failed-only, actor, time range) with keyset pagination."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/activity/feed", operation: "feed"}
+          input_schema_ref: "schema://nova/activity-log/feed-query@0.1.0"
+          output_schema_ref: "schema://nova/activity-log/feed-page@0.1.0"
+          objects:
+            - {object_id: "nova.ops.activity_entry", name: "Activity entry", description: "One append-only record of an action", operations: ["read"], scope_rules: ["owner session only", "text escaped on display"], schema_ref: "schema://nova/activity-log/activity-entry@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/activity-log/feed-query@0.1.0", output_schema_ref: "schema://nova/activity-log/feed-page@0.1.0", constraints: ["read-only", "limit at most 100"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["activity:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 2, max_attempts: 2, rate_limits: [], error_codes: ["query_timeout"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every item matches the filters"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.activity.log.stats"
+          name: "Feed stats"
+          description: "Counts today, total, by source, and failures in the last 24 hours."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/activity/stats", operation: "stats"}
+          input_schema_ref: "schema://nova/activity-log/feed-query@0.1.0"
+          output_schema_ref: "schema://nova/activity-log/stats@0.1.0"
+          objects:
+            - {object_id: "nova.ops.activity_entry", name: "Activity entry", description: "One append-only record of an action", operations: ["read"], scope_rules: ["owner session or brief recipe", "counts only"], schema_ref: "schema://nova/activity-log/activity-entry@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/activity-log/feed-query@0.1.0", output_schema_ref: "schema://nova/activity-log/stats@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["activity:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 2, max_attempts: 2, rate_limits: [], error_codes: []}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["counts equal feed totals"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.activity.log.verify"
+          name: "Verify integrity"
+          description: "Recompute the hash chain (incremental daily, full weekly) and compare domain event counts with entries."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/activity/verify", operation: "verify"}
+          input_schema_ref: "schema://nova/activity-log/verify-request@0.1.0"
+          output_schema_ref: "schema://nova/activity-log/integrity-report@0.1.0"
+          objects:
+            - {object_id: "nova.ops.activity_entry", name: "Activity entry", description: "One append-only record of an action", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/activity-log/activity-entry@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/activity-log/verify-request@0.1.0", output_schema_ref: "schema://nova/activity-log/integrity-report@0.1.0", constraints: ["read-only apart from the report"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["activity:verify"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["integrity report written"], idempotency: "not_applicable", timeout_seconds: 300, max_attempts: 2, rate_limits: [], error_codes: ["chain_broken", "coverage_gap"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["chain_ok true", "coverage equal per triggered domain"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.activity.triggers"
+      name: "Domain triggers"
+      description: "Log domain changes (meetings, calls, minutes, research, published posts) automatically in the same transaction."
+      intent_examples: []
+      input_schema_ref: "schema://nova/activity-log/trigger-map@0.1.0"
+      output_schema_ref: "schema://nova/activity-log/trigger-map@0.1.0"
+      risk_class: "medium"
+      preconditions: ["operator approval", "mapping tested in a rolled-back transaction"]
+      postconditions: ["one entry per mapped domain event"]
+      tools:
+        - tool_id: "nova.activity.triggers.install"
+          name: "Install trigger map"
+          description: "Create or update AFTER triggers that call the logging function for mapped events."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/activity/triggers", operation: "install"}
+          input_schema_ref: "schema://nova/activity-log/trigger-map@0.1.0"
+          output_schema_ref: "schema://nova/activity-log/trigger-map@0.1.0"
+          objects:
+            - {object_id: "nova.ops.activity_trigger_map", name: "Trigger map", description: "Domain table events mapped to activity actions", operations: ["create", "update"], scope_rules: ["operator-approved domains only"], schema_ref: "schema://nova/activity-log/trigger-map@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["PostgreSQL-compatible database"], input_schema_ref: "schema://nova/activity-log/trigger-map@0.1.0", output_schema_ref: "schema://nova/activity-log/trigger-map@0.1.0", constraints: ["rolled-back test must produce exactly one entry before install"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["activity:triggers:admin"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["triggers installed on domain tables"], idempotency: "required", timeout_seconds: 60, max_attempts: 1, rate_limits: [], error_codes: ["mapping_test_failed", "permission_denied"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["rolled-back insert yields one entry inside the transaction and none after"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.activity.retention"
+      name: "Retention"
+      description: "Remove entries older than the approved period and leave a tombstone that bridges the chain."
+      intent_examples: []
+      input_schema_ref: "schema://nova/activity-log/purge-request@0.1.0"
+      output_schema_ref: "schema://nova/activity-log/purge-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["retention policy approved", "integrity verified for the range"]
+      postconditions: ["no entry older than the period", "tombstone present"]
+      tools:
+        - tool_id: "nova.activity.retention.purge"
+          name: "Purge expired entries"
+          description: "Retention role deletes entries older than the period in one transaction and appends a tombstone with the range and last hash."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/activity/purge", operation: "purge"}
+          input_schema_ref: "schema://nova/activity-log/purge-request@0.1.0"
+          output_schema_ref: "schema://nova/activity-log/purge-result@0.1.0"
+          objects:
+            - {object_id: "nova.ops.activity_entry", name: "Activity entry", description: "One append-only record of an action", operations: ["delete", "create"], scope_rules: ["entries older than the approved period only", "tombstone created in the same transaction"], schema_ref: "schema://nova/activity-log/activity-entry@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/activity-log/purge-request@0.1.0", output_schema_ref: "schema://nova/activity-log/purge-result@0.1.0", constraints: ["first run is a reviewed dry run", "skip when verification failed", "ask operator above 20 percent"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["activity:retention"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["expired entries deleted", "tombstone created"], idempotency: "required", timeout_seconds: 300, max_attempts: 2, rate_limits: ["once per day"], error_codes: ["verification_failed", "confirmation_required"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["chain verifies across the tombstone"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

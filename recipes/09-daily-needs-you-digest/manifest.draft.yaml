@@ -1,0 +1,138 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.inbox"
+    name: "Nova — Inbox intelligence"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Daily plain-text digest of important and needs-reply mail to the owner's chat, with send-then-mark and a quiet day when nothing needs the owner."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Triage results from the inbox-triage recipe"
+        - "Owner notification channel verified as the owner's private chat"
+        - "Owner time zone configured"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.mail.attention"
+      name: "Attention items"
+      description: "Triaged emails that are important or need a reply, excluding dismissed ones."
+      intent_examples: ["what needs me today"]
+      input_schema_ref: "schema://nova/daily-needs-you-digest/attention-query@0.1.0"
+      output_schema_ref: "schema://nova/daily-needs-you-digest/attention-item@0.1.0"
+      risk_class: "medium"
+      preconditions: ["triage running"]
+      postconditions: ["no dismissed or already-notified item returned"]
+      tools:
+        - tool_id: "nova.mail.attention.unnotified"
+          name: "Unnotified attention items"
+          description: "Important or needs-reply items in the look-back window, not dismissed, notified marker empty; one per Message-ID; also returns the aged-out count and the last triage time."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/attention-unnotified", operation: "unnotified"}
+          input_schema_ref: "schema://nova/daily-needs-you-digest/attention-query@0.1.0"
+          output_schema_ref: "schema://nova/daily-needs-you-digest/attention-batch@0.1.0"
+          objects:
+            - {object_id: "nova.mail.attention_item", name: "Attention item", description: "View over triaged message copies", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/daily-needs-you-digest/attention-item@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/daily-needs-you-digest/attention-query@0.1.0", output_schema_ref: "schema://nova/daily-needs-you-digest/attention-batch@0.1.0", constraints: ["read-only", "dismissed items excluded"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:attention:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no dismissed item", "no notified item", "distinct Message-IDs"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.mail.attention.mark_notified"
+          name: "Mark notified"
+          description: "Set the notified marker on listed items and every copy with the same Message-ID, only after delivery is confirmed."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/attention-mark-notified", operation: "mark_notified"}
+          input_schema_ref: "schema://nova/daily-needs-you-digest/mark-request@0.1.0"
+          output_schema_ref: "schema://nova/daily-needs-you-digest/mark-result@0.1.0"
+          objects:
+            - {object_id: "nova.mail.attention_item", name: "Attention item", description: "Notified marker on message copies", operations: ["update"], scope_rules: ["attention_notified_at only", "listed items only"], schema_ref: "schema://nova/daily-needs-you-digest/mark-request@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/daily-needs-you-digest/mark-request@0.1.0", output_schema_ref: "schema://nova/daily-needs-you-digest/mark-result@0.1.0", constraints: ["conditional on an empty marker"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:attention:mark"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["notified marker set"], idempotency: "required", timeout_seconds: 10, max_attempts: 4, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["marked plus already_marked equals listed"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.mail.digest"
+      name: "Digest record"
+      description: "One record per owner per local date holding the composed text hash, listed items and delivery state."
+      intent_examples: ["did my digest go out today"]
+      input_schema_ref: "schema://nova/daily-needs-you-digest/digest-key@0.1.0"
+      output_schema_ref: "schema://nova/daily-needs-you-digest/digest-record@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner time zone configured"]
+      postconditions: ["at most one record per digest key"]
+      tools:
+        - tool_id: "nova.mail.digest.get"
+          name: "Get digest record"
+          description: "Read the record for a digest key."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/digest-get", operation: "get"}
+          input_schema_ref: "schema://nova/daily-needs-you-digest/digest-key@0.1.0"
+          output_schema_ref: "schema://nova/daily-needs-you-digest/digest-record@0.1.0"
+          objects:
+            - {object_id: "nova.mail.digest_record", name: "Digest record", description: "Daily digest state", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/daily-needs-you-digest/digest-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/daily-needs-you-digest/digest-key@0.1.0", output_schema_ref: "schema://nova/daily-needs-you-digest/digest-record@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:digest:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["at most one record per key"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.mail.digest.prepare"
+          name: "Prepare digest"
+          description: "Store the composed digest (listed item IDs, content hash) with status prepared before sending."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/digest-prepare", operation: "prepare"}
+          input_schema_ref: "schema://nova/daily-needs-you-digest/digest-message@0.1.0"
+          output_schema_ref: "schema://nova/daily-needs-you-digest/digest-record@0.1.0"
+          objects:
+            - {object_id: "nova.mail.digest_record", name: "Digest record", description: "Daily digest state", operations: ["create"], scope_rules: ["unique per digest key"], schema_ref: "schema://nova/daily-needs-you-digest/digest-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/daily-needs-you-digest/digest-message@0.1.0", output_schema_ref: "schema://nova/daily-needs-you-digest/digest-record@0.1.0", constraints: ["reuse an existing prepared record only when the hash matches"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:digest:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["digest record created"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["duplicate_key_hash_mismatch"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["record readable by key with status prepared"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.mail.digest.complete"
+          name: "Complete digest"
+          description: "Record sent (with channel message ID), quiet or delivery_unknown."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/digest-complete", operation: "complete"}
+          input_schema_ref: "schema://nova/daily-needs-you-digest/digest-record@0.1.0"
+          output_schema_ref: "schema://nova/daily-needs-you-digest/digest-record@0.1.0"
+          objects:
+            - {object_id: "nova.mail.digest_record", name: "Digest record", description: "Daily digest state", operations: ["create", "update"], scope_rules: ["status, channel_message_id and sent_at only"], schema_ref: "schema://nova/daily-needs-you-digest/digest-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/daily-needs-you-digest/digest-record@0.1.0", output_schema_ref: "schema://nova/daily-needs-you-digest/digest-record@0.1.0", constraints: ["sent requires a channel message ID"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:digest:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["digest record status updated"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["invalid_transition"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status matches the observed outcome"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver the digest to the owner's own private channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/daily-needs-you-digest/digest-message@0.1.0"
+      output_schema_ref: "schema://nova/daily-needs-you-digest/delivery@0.1.0"
+      risk_class: "medium"
+      preconditions: ["owner channel verified as private"]
+      postconditions: ["delivery receipt with channel message ID, or delivery unknown"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send plain text to the owner with an idempotency key; the adapter returns the existing message ID for a repeated key."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/daily-needs-you-digest/digest-message@0.1.0"
+          output_schema_ref: "schema://nova/daily-needs-you-digest/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "The digest message", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/daily-needs-you-digest/digest-message@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Plain text, no markup parsing, idempotency key recorded by the adapter; only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/daily-needs-you-digest/digest-message@0.1.0", output_schema_ref: "schema://nova/daily-needs-you-digest/delivery@0.1.0", constraints: ["owner only", "no fallback channel"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: ["one digest per owner per local date"], error_codes: ["channel_unavailable", "delivery_unknown"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt with message ID", "one message per digest key"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

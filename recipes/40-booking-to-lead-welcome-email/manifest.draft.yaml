@@ -1,0 +1,290 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.sales"
+    name: "Nova — Sales"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Booking events become guarded sales leads, auto-enrolled in an owner-approved inbound campaign, with one templated welcome email sent in business hours."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "event"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Booking system emitting booking.created and booking.cancelled through an outbox"
+        - "Sales store with leads, campaigns, approvals, enrolments, touches and suppression"
+        - "Transactional email-sending API on a verified sending domain"
+        - "Inbound reply and opt-out handler"
+        - "Owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.calendar.bookings"
+      name: "Booking events"
+      description: "Deliver booking created and cancelled events at least once, outside the booking transaction."
+      intent_examples: []
+      input_schema_ref: "schema://nova/booking-to-lead-welcome-email/booking-event@0.1.0"
+      output_schema_ref: "schema://nova/booking-to-lead-welcome-email/booking-event@0.1.0"
+      risk_class: "low"
+      preconditions: ["booking system connected"]
+      postconditions: ["each event processed once by event_id"]
+      tools:
+        - tool_id: "nova.calendar.bookings.on_event"
+          name: "On booking event"
+          description: "Consume booking events from an outbox written in the booking transaction."
+          invocation: {protocol: "event", binding_ref: "binding://nova/calendar/booking-events", operation: "on_event"}
+          input_schema_ref: "schema://nova/booking-to-lead-welcome-email/booking-event@0.1.0"
+          output_schema_ref: "schema://nova/booking-to-lead-welcome-email/booking-event@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.booking_event", name: "Booking event", description: "A created or cancelled booking", operations: ["read"], scope_rules: ["owner's calendar only"], schema_ref: "schema://nova/booking-to-lead-welcome-email/booking-event@0.1.0"}
+          variants:
+            - {variant_id: "outbox", description: "Outbox consumer; a sales failure can never block a booking; only this variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/booking-to-lead-welcome-email/booking-event@0.1.0", output_schema_ref: "schema://nova/booking-to-lead-welcome-email/booking-event@0.1.0", constraints: ["at-least-once delivery", "idempotent by event_id"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:bookings:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "required", timeout_seconds: 5, max_attempts: 5, rate_limits: [], error_codes: ["invalid_event"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["event validated", "duplicate event acknowledged without effect"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.sales.policy"
+      name: "Sales guard policy"
+      description: "Owner-defined lists of owner and staff addresses and own domains used to keep internal and test bookings out of the pipeline."
+      intent_examples: []
+      input_schema_ref: "schema://nova/booking-to-lead-welcome-email/identity-query@0.1.0"
+      output_schema_ref: "schema://nova/booking-to-lead-welcome-email/internal-check-result@0.1.0"
+      risk_class: "low"
+      preconditions: ["guard configuration present"]
+      postconditions: ["a reason code for every decision"]
+      tools:
+        - tool_id: "nova.sales.policy.internal_check"
+          name: "Internal check"
+          description: "Return internal=true for the owner, staff, own domains and subdomains, test or staff-created bookings."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/internal-check", operation: "internal_check"}
+          input_schema_ref: "schema://nova/booking-to-lead-welcome-email/identity-query@0.1.0"
+          output_schema_ref: "schema://nova/booking-to-lead-welcome-email/internal-check-result@0.1.0"
+          objects:
+            - {object_id: "nova.sales.guard_config", name: "Guard configuration", description: "Owner, staff and own-domain lists", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/booking-to-lead-welcome-email/internal-check-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/booking-to-lead-welcome-email/identity-query@0.1.0", output_schema_ref: "schema://nova/booking-to-lead-welcome-email/internal-check-result@0.1.0", constraints: ["read-only", "unavailable means blocked, never external"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:policy:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["config_missing"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["subdomains of own domains classified internal"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.sales.leads"
+      name: "Sales leads"
+      description: "Create, update and move leads through stages."
+      intent_examples: ["who booked this week"]
+      input_schema_ref: "schema://nova/booking-to-lead-welcome-email/lead@0.1.0"
+      output_schema_ref: "schema://nova/booking-to-lead-welcome-email/lead@0.1.0"
+      risk_class: "medium"
+      preconditions: ["guard passed"]
+      postconditions: ["one lead per normalised email"]
+      tools:
+        - tool_id: "nova.sales.leads.upsert_from_booking"
+          name: "Upsert lead from booking"
+          description: "Create or update a lead by normalised email, set meeting_booked where allowed, link the booking."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/lead-upsert", operation: "upsert_from_booking"}
+          input_schema_ref: "schema://nova/booking-to-lead-welcome-email/booking-event@0.1.0"
+          output_schema_ref: "schema://nova/booking-to-lead-welcome-email/lead@0.1.0"
+          objects:
+            - {object_id: "nova.sales.lead", name: "Lead", description: "A sales prospect", operations: ["create", "read", "update"], scope_rules: ["owner's tenant only", "stage never moves backwards"], schema_ref: "schema://nova/booking-to-lead-welcome-email/lead@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/booking-to-lead-welcome-email/booking-event@0.1.0", output_schema_ref: "schema://nova/booking-to-lead-welcome-email/lead@0.1.0", constraints: ["unique on normalised email"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:leads:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["lead created or updated"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["exactly one lead for the email", "no backwards stage move"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.sales.leads.set_stage"
+          name: "Set stage"
+          description: "Conditional stage change; on cancellation meeting_booked becomes engaged with next_action rebook."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/lead-stage", operation: "set_stage"}
+          input_schema_ref: "schema://nova/booking-to-lead-welcome-email/stage-change@0.1.0"
+          output_schema_ref: "schema://nova/booking-to-lead-welcome-email/lead@0.1.0"
+          objects:
+            - {object_id: "nova.sales.lead", name: "Lead", description: "A sales prospect", operations: ["update"], scope_rules: ["stage and next_action only", "conditional on from_stage"], schema_ref: "schema://nova/booking-to-lead-welcome-email/stage-change@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/booking-to-lead-welcome-email/stage-change@0.1.0", output_schema_ref: "schema://nova/booking-to-lead-welcome-email/lead@0.1.0", constraints: ["only meeting_booked to engaged may move backwards"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:leads:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["lead stage updated"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["stage_conflict"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["stage equals to_stage only when from_stage matched"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.sales.campaigns"
+      name: "Campaigns and approvals"
+      description: "Campaigns, their steps and owner approvals bound to a content hash."
+      intent_examples: []
+      input_schema_ref: "schema://nova/booking-to-lead-welcome-email/campaign-query@0.1.0"
+      output_schema_ref: "schema://nova/booking-to-lead-welcome-email/approved-campaign@0.1.0"
+      risk_class: "medium"
+      preconditions: ["owner approved a campaign version"]
+      postconditions: ["approval hash equals current content hash"]
+      tools:
+        - tool_id: "nova.sales.campaigns.resolve_approved"
+          name: "Resolve approved campaign"
+          description: "Return the single active auto-send inbound campaign whose current content hash equals its approval, with pre-approved step IDs."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/campaign-approved", operation: "resolve_approved"}
+          input_schema_ref: "schema://nova/booking-to-lead-welcome-email/campaign-query@0.1.0"
+          output_schema_ref: "schema://nova/booking-to-lead-welcome-email/approved-campaign@0.1.0"
+          objects:
+            - {object_id: "nova.sales.campaign", name: "Campaign", description: "Campaign, steps and approval", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/booking-to-lead-welcome-email/approved-campaign@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/booking-to-lead-welcome-email/campaign-query@0.1.0", output_schema_ref: "schema://nova/booking-to-lead-welcome-email/approved-campaign@0.1.0", constraints: ["read-only", "exactly one match or none"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:campaigns:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["none_approved", "hash_mismatch", "ambiguous"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["hash_matches is true", "welcome step pre-approved"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.sales.suppression"
+      name: "Suppression list"
+      description: "Opt-outs, bounces, complaints and manual do-not-contact entries."
+      intent_examples: []
+      input_schema_ref: "schema://nova/booking-to-lead-welcome-email/suppression-query@0.1.0"
+      output_schema_ref: "schema://nova/booking-to-lead-welcome-email/suppression-result@0.1.0"
+      risk_class: "medium"
+      preconditions: []
+      postconditions: ["suppressed addresses never enrolled or emailed"]
+      tools:
+        - tool_id: "nova.sales.suppression.check"
+          name: "Check suppression"
+          description: "Return whether an address or its domain is suppressed, and why."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/suppression-check", operation: "check"}
+          input_schema_ref: "schema://nova/booking-to-lead-welcome-email/suppression-query@0.1.0"
+          output_schema_ref: "schema://nova/booking-to-lead-welcome-email/suppression-result@0.1.0"
+          objects:
+            - {object_id: "nova.sales.suppression_entry", name: "Suppression entry", description: "A do-not-contact record", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/booking-to-lead-welcome-email/suppression-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/booking-to-lead-welcome-email/suppression-query@0.1.0", output_schema_ref: "schema://nova/booking-to-lead-welcome-email/suppression-result@0.1.0", constraints: ["read-only", "unavailable means do not send"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:suppression:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["opt-outs, bounces and complaints included"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.sales.sequences"
+      name: "Sequences"
+      description: "Enrolments in campaigns and their step schedule."
+      intent_examples: []
+      input_schema_ref: "schema://nova/booking-to-lead-welcome-email/enrollment-request@0.1.0"
+      output_schema_ref: "schema://nova/booking-to-lead-welcome-email/enrollment@0.1.0"
+      risk_class: "medium"
+      preconditions: ["approved campaign", "lead not suppressed"]
+      postconditions: ["one enrolment per lead, campaign and booking"]
+      tools:
+        - tool_id: "nova.sales.sequences.enroll"
+          name: "Enrol"
+          description: "Enrol a lead once per campaign and booking with the welcome due now; never reactivates suppressed or replied enrolments."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/seq-enroll", operation: "enroll"}
+          input_schema_ref: "schema://nova/booking-to-lead-welcome-email/enrollment-request@0.1.0"
+          output_schema_ref: "schema://nova/booking-to-lead-welcome-email/enrollment@0.1.0"
+          objects:
+            - {object_id: "nova.sales.enrollment", name: "Enrolment", description: "A lead in a campaign", operations: ["create"], scope_rules: ["unique on lead, campaign and booking"], schema_ref: "schema://nova/booking-to-lead-welcome-email/enrollment@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/booking-to-lead-welcome-email/enrollment-request@0.1.0", output_schema_ref: "schema://nova/booking-to-lead-welcome-email/enrollment@0.1.0", constraints: ["never reactivate suppressed or replied"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:sequences:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["enrolment created"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["suppressed", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["one enrolment for the key"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.sales.sequences.due"
+          name: "Due steps"
+          description: "Enrolments of the approved campaign whose next pre-approved step is due."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/seq-due", operation: "due"}
+          input_schema_ref: "schema://nova/booking-to-lead-welcome-email/due-query@0.1.0"
+          output_schema_ref: "schema://nova/booking-to-lead-welcome-email/enrollment@0.1.0"
+          objects:
+            - {object_id: "nova.sales.enrollment", name: "Enrolment", description: "A lead in a campaign", operations: ["read"], scope_rules: ["active enrolments only"], schema_ref: "schema://nova/booking-to-lead-welcome-email/enrollment@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/booking-to-lead-welcome-email/due-query@0.1.0", output_schema_ref: "schema://nova/booking-to-lead-welcome-email/enrollment@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:sequences:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every due step is pre-approved"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.sales.sequences.advance"
+          name: "Advance step"
+          description: "Mark a step sent, skipped, cancelled or failed and schedule the next step or finish."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/seq-advance", operation: "advance"}
+          input_schema_ref: "schema://nova/booking-to-lead-welcome-email/advance-request@0.1.0"
+          output_schema_ref: "schema://nova/booking-to-lead-welcome-email/enrollment@0.1.0"
+          objects:
+            - {object_id: "nova.sales.enrollment", name: "Enrolment", description: "A lead in a campaign", operations: ["update"], scope_rules: ["step state and next_at only", "conditional on current step state"], schema_ref: "schema://nova/booking-to-lead-welcome-email/advance-request@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/booking-to-lead-welcome-email/advance-request@0.1.0", output_schema_ref: "schema://nova/booking-to-lead-welcome-email/enrollment@0.1.0", constraints: [], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:sequences:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["enrolment step state updated"], idempotency: "required", timeout_seconds: 10, max_attempts: 4, rate_limits: [], error_codes: ["state_conflict"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["step state matches the outcome"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.email.send"
+      name: "Transactional email"
+      description: "Send one email from a verified sending domain with an idempotency key."
+      intent_examples: []
+      input_schema_ref: "schema://nova/booking-to-lead-welcome-email/rendered-email@0.1.0"
+      output_schema_ref: "schema://nova/booking-to-lead-welcome-email/send-result@0.1.0"
+      risk_class: "high"
+      preconditions: ["sending domain verified with SPF and DKIM", "pre-approved scope satisfied"]
+      postconditions: ["at most one provider message per idempotency key"]
+      tools:
+        - tool_id: "nova.email.send.transactional"
+          name: "Send transactional email"
+          description: "One API call; plain text plus minimal HTML; tracking off; idempotency key required."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/email/send", operation: "send_transactional"}
+          input_schema_ref: "schema://nova/booking-to-lead-welcome-email/rendered-email@0.1.0"
+          output_schema_ref: "schema://nova/booking-to-lead-welcome-email/send-result@0.1.0"
+          objects:
+            - {object_id: "nova.email.message", name: "Outbound email", description: "One email to one recipient", operations: ["create"], scope_rules: ["recipient equals the booking attendee", "pre-approved step only"], schema_ref: "schema://nova/booking-to-lead-welcome-email/rendered-email@0.1.0"}
+          variants:
+            - {variant_id: "provider-api", description: "Transactional API on the verified sending domain; only this variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/booking-to-lead-welcome-email/rendered-email@0.1.0", output_schema_ref: "schema://nova/booking-to-lead-welcome-email/send-result@0.1.0", constraints: ["no fallback provider or domain", "open and click tracking off", "no blind retry"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["email:send:transactional"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["email delivered to a third party", "provider charge"], idempotency: "required", timeout_seconds: 20, max_attempts: 2, rate_limits: ["daily cap", "one email per recipient per 24 hours", "provider rate limit"], error_codes: ["invalid_recipient", "domain_not_verified", "rate_limited", "duplicate", "provider_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["accepted with provider message ID", "one message per key"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.sales.touches"
+      name: "Touches"
+      description: "Record of every sales interaction."
+      intent_examples: []
+      input_schema_ref: "schema://nova/booking-to-lead-welcome-email/touch@0.1.0"
+      output_schema_ref: "schema://nova/booking-to-lead-welcome-email/touch-receipt@0.1.0"
+      risk_class: "low"
+      preconditions: []
+      postconditions: ["one touch per provider message"]
+      tools:
+        - tool_id: "nova.sales.touches.log"
+          name: "Log touch"
+          description: "Log the sent welcome with channel, direction and provider message ID."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/sales/touch-log", operation: "log"}
+          input_schema_ref: "schema://nova/booking-to-lead-welcome-email/touch@0.1.0"
+          output_schema_ref: "schema://nova/booking-to-lead-welcome-email/touch-receipt@0.1.0"
+          objects:
+            - {object_id: "nova.sales.touch", name: "Touch", description: "One interaction with a lead", operations: ["create"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/booking-to-lead-welcome-email/touch@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/booking-to-lead-welcome-email/touch@0.1.0", output_schema_ref: "schema://nova/booking-to-lead-welcome-email/touch-receipt@0.1.0", constraints: ["unique on provider message ID"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sales:touches:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["touch created"], idempotency: "required", timeout_seconds: 10, max_attempts: 4, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["touch has provider message ID"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Tell the owner about new booking leads, sends and exceptions."
+      intent_examples: []
+      input_schema_ref: "schema://nova/booking-to-lead-welcome-email/owner-note@0.1.0"
+      output_schema_ref: "schema://nova/booking-to-lead-welcome-email/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send one plain-text note to the owner only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/booking-to-lead-welcome-email/owner-note@0.1.0"
+          output_schema_ref: "schema://nova/booking-to-lead-welcome-email/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the owner", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/booking-to-lead-welcome-email/owner-note@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/booking-to-lead-welcome-email/owner-note@0.1.0", output_schema_ref: "schema://nova/booking-to-lead-welcome-email/delivery@0.1.0", constraints: ["owner only", "plain text"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

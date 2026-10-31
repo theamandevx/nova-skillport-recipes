@@ -1,0 +1,166 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.memory"
+    name: "Nova — Memory and notes"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Turn rough text into a faithful structured note, save it as a draft, and confirm only on the user's yes."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Per-user notes store with create, read, update and a status field"
+        - "LLM for structuring and an independent fidelity check"
+        - "Owner notification channel with reply options"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.notes.draft"
+      name: "Note drafting"
+      description: "Screen rough text for secrets, structure it into title, body and tags, and check fidelity."
+      intent_examples: ["make a note of this", "turn this into a note"]
+      input_schema_ref: "schema://nova/save-a-note-draft/request@0.1.0"
+      output_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"
+      risk_class: "low"
+      preconditions: ["non-empty raw text"]
+      postconditions: ["fidelity report passed", "no secret patterns in the working text"]
+      tools:
+        - tool_id: "nova.notes.draft.screen"
+          name: "Screen raw text"
+          description: "Rule patterns for secrets and payment data plus LLM detection of special-category data; rules override the LLM."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notes/screen", operation: "screen"}
+          input_schema_ref: "schema://nova/save-a-note-draft/request@0.1.0"
+          output_schema_ref: "schema://nova/save-a-note-draft/screen-result@0.1.0"
+          objects:
+            - {object_id: "nova.notes.screen_result", name: "Screen result", description: "Kinds and spans of sensitive findings", operations: ["create"], scope_rules: ["this run only", "values never logged"], schema_ref: "schema://nova/save-a-note-draft/screen-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/save-a-note-draft/request@0.1.0", output_schema_ref: "schema://nova/save-a-note-draft/screen-result@0.1.0", constraints: ["rule match cannot be overridden"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notes:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: [], error_codes: ["secret_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["secret fixtures always flagged"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.notes.draft.structure"
+          name: "Structure note"
+          description: "Produce title, body, 1-5 tags and stated action items; keep the user's wording and language; mark unclear phrases."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notes/structure", operation: "structure"}
+          input_schema_ref: "schema://nova/save-a-note-draft/request@0.1.0"
+          output_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"
+          objects:
+            - {object_id: "nova.notes.note", name: "Note", description: "A structured note owned by the user", operations: ["create"], scope_rules: ["candidate only until saved"], schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported; source_kind adjusts cleanup within the same contract", compatible_environments: [], input_schema_ref: "schema://nova/save-a-note-draft/request@0.1.0", output_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0", constraints: ["no added facts", "action items only when stated"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notes:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 60, max_attempts: 2, rate_limits: [], error_codes: ["schema_invalid", "input_too_long"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["title 1-80 chars", "tags match ^[a-z0-9]+(-[a-z0-9]+)*$"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.notes.draft.check_fidelity"
+          name: "Check fidelity"
+          description: "Separate pass that sees only the source and the candidate; lists added facts and dropped points."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notes/fidelity", operation: "check_fidelity"}
+          input_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"
+          output_schema_ref: "schema://nova/save-a-note-draft/fidelity-report@0.1.0"
+          objects:
+            - {object_id: "nova.notes.fidelity_report", name: "Fidelity report", description: "Added facts, dropped points and unclear marks", operations: ["create"], scope_rules: ["this run only"], schema_ref: "schema://nova/save-a-note-draft/fidelity-report@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0", output_schema_ref: "schema://nova/save-a-note-draft/fidelity-report@0.1.0", constraints: ["independent of the structuring pass"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notes:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 30, max_attempts: 2, rate_limits: [], error_codes: ["added_fact", "dropped_point"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["added_facts empty", "dropped points only filler, duplicate or user_request"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notes.store"
+      name: "Notes store"
+      description: "The user's notes, each with a status of draft, confirmed or discarded."
+      intent_examples: ["save this as a draft note", "confirm that note"]
+      input_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"
+      output_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"
+      risk_class: "medium"
+      preconditions: ["store bound to the requesting user"]
+      postconditions: ["read-after-write matches"]
+      tools:
+        - tool_id: "nova.notes.store.find_similar"
+          name: "Find similar notes"
+          description: "Return the user's notes with similar titles or tags; a hint only, never merged automatically."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notes/find-similar", operation: "find_similar"}
+          input_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"
+          output_schema_ref: "schema://nova/save-a-note-draft/note-list@0.1.0"
+          objects:
+            - {object_id: "nova.notes.note", name: "Note", description: "A structured note owned by the user", operations: ["read"], scope_rules: ["requesting user's notes only", "titles and tags only"], schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0", output_schema_ref: "schema://nova/save-a-note-draft/note-list@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notes:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["only own notes returned"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.notes.store.create_draft"
+          name: "Create draft"
+          description: "Save one note with status draft."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notes/create-draft", operation: "create_draft"}
+          input_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"
+          output_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"
+          objects:
+            - {object_id: "nova.notes.note", name: "Note", description: "A structured note owned by the user", operations: ["create"], scope_rules: ["requesting user's store only", "status must be draft"], schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0", output_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0", constraints: ["one note per idempotency key", "no fallback store"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notes:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["note record created with status draft"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable", "too_large", "unauthorized"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["get returns status draft and matching content hash"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.notes.store.get"
+          name: "Get note"
+          description: "Read one note by ID or idempotency key."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notes/get", operation: "get"}
+          input_schema_ref: "schema://nova/save-a-note-draft/note-ref@0.1.0"
+          output_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"
+          objects:
+            - {object_id: "nova.notes.note", name: "Note", description: "A structured note owned by the user", operations: ["read"], scope_rules: ["requesting user's notes only"], schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/save-a-note-draft/note-ref@0.1.0", output_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notes:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["only own notes returned"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.notes.store.update"
+          name: "Update draft"
+          description: "Edit the draft's fields on request, or move status draft to confirmed or discarded on the user's decision; conditional on status and content hash."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notes/update", operation: "update"}
+          input_schema_ref: "schema://nova/save-a-note-draft/note-update@0.1.0"
+          output_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"
+          objects:
+            - {object_id: "nova.notes.note", name: "Note", description: "A structured note owned by the user", operations: ["update"], scope_rules: ["only the note created in this run", "fields title, body, tags, action_items, status", "status transitions draft->confirmed and draft->discarded only"], schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/save-a-note-draft/note-update@0.1.0", output_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0", constraints: ["confirm requires the user's yes for the shown hash", "no hard delete"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notes:update"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["note fields or status changed"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["conflict", "not_draft", "not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["re-read shows the requested status and hash"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"
+      output_schema_ref: "schema://nova/save-a-note-draft/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Show the draft with Confirm, Edit and Discard options and report the final state."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0"
+          output_schema_ref: "schema://nova/save-a-note-draft/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/save-a-note-draft/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/save-a-note-draft/note@0.1.0", output_schema_ref: "schema://nova/save-a-note-draft/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received", "preview hash equals stored hash"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

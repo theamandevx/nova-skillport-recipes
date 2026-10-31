@@ -1,0 +1,191 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.research"
+    name: "Nova — Research"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Find, read and cite real sources for a research or current-facts question, and save the brief."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Metasearch engine with a JSON API (or an approved scholarly-record index)"
+        - "HTTP fetcher with HTML-to-text extraction and a public-address guard"
+        - "LLM for synthesis and an independent verifier pass"
+        - "Research library store and an owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.research.search"
+      name: "Source search"
+      description: "Find candidate sources for a question through a declared search variant."
+      intent_examples: ["research the market for X", "what is the latest on Y", "find studies about Z"]
+      input_schema_ref: "schema://nova/find-research-records/search-query@0.1.0"
+      output_schema_ref: "schema://nova/find-research-records/search-result@0.1.0"
+      risk_class: "low"
+      preconditions: ["query passed the privacy check"]
+      postconditions: ["candidate list, or a named empty or rate_limited state"]
+      tools:
+        - tool_id: "nova.research.search.query"
+          name: "Search"
+          description: "Run one query and return ranked results; empty and rate_limited are reported, never hidden."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/research/metasearch", operation: "query"}
+          input_schema_ref: "schema://nova/find-research-records/search-query@0.1.0"
+          output_schema_ref: "schema://nova/find-research-records/search-result@0.1.0"
+          objects:
+            - {object_id: "nova.research.search_result", name: "Search result", description: "Ranked candidate sources from one query, with state ok, empty or rate_limited; scholarly results carry a scholarly record", operations: ["read"], scope_rules: ["this run only"], schema_ref: "schema://nova/find-research-records/search-result@0.1.0"}
+            - {object_id: "nova.research.scholarly_record", name: "Scholarly record", description: "Public index metadata for a published work", operations: ["read"], scope_rules: ["public metadata only"], schema_ref: "schema://nova/find-research-records/scholarly-record@0.1.0"}
+          variants:
+            - {variant_id: "metasearch", description: "Self-hosted SearXNG JSON API; default for web questions; no API key", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/find-research-records/search-query@0.1.0", output_schema_ref: "schema://nova/find-research-records/search-result@0.1.0", constraints: ["read-only", "upstream engines may rate-limit"], fallback_variant_id: "keyed-web"}
+            - {variant_id: "scholarly-openalex", description: "OpenAlex works search; first for scholarly questions; proposed, not built", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/find-research-records/search-query@0.1.0", output_schema_ref: "schema://nova/find-research-records/search-result@0.1.0", constraints: ["read-only", "provider rate limits TBD"], fallback_variant_id: "scholarly-crossref"}
+            - {variant_id: "scholarly-crossref", description: "Crossref works search; DOI-authoritative metadata; proposed, not built", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/find-research-records/search-query@0.1.0", output_schema_ref: "schema://nova/find-research-records/search-result@0.1.0", constraints: ["read-only", "provider rate limits TBD"], fallback_variant_id: null}
+            - {variant_id: "keyed-web", description: "Operator-installed keyed web-search API; proposed, not built", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/find-research-records/search-query@0.1.0", output_schema_ref: "schema://nova/find-research-records/search-result@0.1.0", constraints: ["user must be told before use (different data processor and cost)", "never selected silently"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["research:search"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["query text sent to the search provider and its upstream engines"], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 2, rate_limits: ["provider limits TBD"], error_codes: ["empty", "rate_limited", "variant_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["results parse against search-result@0.1.0", "empty and rate_limited never reported as success"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.research.fetch"
+      name: "Source fetch"
+      description: "Retrieve readable text from a public source URL."
+      intent_examples: []
+      input_schema_ref: "schema://nova/find-research-records/fetch-request@0.1.0"
+      output_schema_ref: "schema://nova/find-research-records/fetched-source@0.1.0"
+      risk_class: "medium"
+      preconditions: ["URL is public http or https and passes the address guard"]
+      postconditions: ["source marked full_text, abstract_only or landing_page, with a text hash"]
+      tools:
+        - tool_id: "nova.research.fetch.page"
+          name: "Fetch page"
+          description: "HTTP GET with at most 3 guarded redirects; HTML stripped to text; page content treated as untrusted data."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/research/fetch", operation: "fetch"}
+          input_schema_ref: "schema://nova/find-research-records/fetch-request@0.1.0"
+          output_schema_ref: "schema://nova/find-research-records/fetched-source@0.1.0"
+          objects:
+            - {object_id: "nova.research.fetched_source", name: "Fetched source", description: "Extracted text of one public page", operations: ["read"], scope_rules: ["public addresses only", "no credentials or cookies sent", "body not retained after the run"], schema_ref: "schema://nova/find-research-records/fetched-source@0.1.0"}
+          variants:
+            - {variant_id: "html-text", description: "HTML and plain-text pages; default", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/find-research-records/fetch-request@0.1.0", output_schema_ref: "schema://nova/find-research-records/fetched-source@0.1.0", constraints: ["max 3 redirects", "1 request per second per host", "no paywall or login bypass"], fallback_variant_id: null}
+            - {variant_id: "pdf-text", description: "PDF text extraction; proposed, not built; when absent read the landing page or abstract and disclose", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/find-research-records/fetch-request@0.1.0", output_schema_ref: "schema://nova/find-research-records/fetched-source@0.1.0", constraints: ["size cap TBD"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["research:fetch"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["outbound HTTP GET visible in the source site's logs"], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: ["4 concurrent fetches", "1 request per second per host"], error_codes: ["blocked_address", "http_error", "paywall_or_login", "too_short", "unsupported_type"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status 200", "at least 500 characters of relevant text", "private addresses never requested"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.research.synthesis"
+      name: "Cited synthesis"
+      description: "Write a brief from read sources only, with inline citations and a list of unanswered points."
+      intent_examples: []
+      input_schema_ref: "schema://nova/find-research-records/fetched-source@0.1.0"
+      output_schema_ref: "schema://nova/find-research-records/research-brief@0.1.0"
+      risk_class: "medium"
+      preconditions: ["at least one source read in this run"]
+      postconditions: ["every finding cites at least one read source"]
+      tools:
+        - tool_id: "nova.research.synthesis.brief"
+          name: "Write brief"
+          description: "LLM synthesis constrained to source texts; never fills gaps from model memory."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/research/synthesis", operation: "brief"}
+          input_schema_ref: "schema://nova/find-research-records/fetched-source@0.1.0"
+          output_schema_ref: "schema://nova/find-research-records/research-brief@0.1.0"
+          objects:
+            - {object_id: "nova.research.brief", name: "Research brief", description: "Summary, cited findings and sources", operations: ["create"], scope_rules: ["this run until saved"], schema_ref: "schema://nova/find-research-records/research-brief@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/find-research-records/fetched-source@0.1.0", output_schema_ref: "schema://nova/find-research-records/research-brief@0.1.0", constraints: ["no facts from model memory", "max 10 findings"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["research:search"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 60, max_attempts: 2, rate_limits: [], error_codes: ["schema_invalid", "citation_invalid"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["schema valid", "no citation to an unread source"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.research.citations"
+      name: "Citation verification"
+      description: "Independently check every finding against the text of the source it cites."
+      intent_examples: []
+      input_schema_ref: "schema://nova/find-research-records/research-brief@0.1.0"
+      output_schema_ref: "schema://nova/find-research-records/citation-verdicts@0.1.0"
+      risk_class: "low"
+      preconditions: ["draft brief and cited source texts available"]
+      postconditions: ["each finding labelled supported or unsupported with an excerpt"]
+      tools:
+        - tool_id: "nova.research.citations.verify"
+          name: "Verify citations"
+          description: "Rule check for numbers, dates and quotes plus a separate LLM pass that sees only findings and excerpts."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/research/citations", operation: "verify"}
+          input_schema_ref: "schema://nova/find-research-records/research-brief@0.1.0"
+          output_schema_ref: "schema://nova/find-research-records/citation-verdicts@0.1.0"
+          objects:
+            - {object_id: "nova.research.brief", name: "Research brief", description: "Draft brief under verification", operations: ["read"], scope_rules: ["this run"], schema_ref: "schema://nova/find-research-records/research-brief@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/find-research-records/research-brief@0.1.0", output_schema_ref: "schema://nova/find-research-records/citation-verdicts@0.1.0", constraints: ["can remove findings, never add them"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["research:search"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 60, max_attempts: 2, rate_limits: [], error_codes: ["unsupported_claim", "retracted_source"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["100% of kept findings supported"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.research.library"
+      name: "Research library"
+      description: "Store and read verified briefs in the requesting user's library."
+      intent_examples: ["save this research", "show my saved research"]
+      input_schema_ref: "schema://nova/find-research-records/research-brief@0.1.0"
+      output_schema_ref: "schema://nova/find-research-records/save-ack@0.1.0"
+      risk_class: "low"
+      preconditions: ["brief passed citation verification"]
+      postconditions: ["read-after-write matches"]
+      tools:
+        - tool_id: "nova.research.library.save"
+          name: "Save brief"
+          description: "Create one library entry through an authenticated gateway and a database dispatcher function."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/research/library-save", operation: "save"}
+          input_schema_ref: "schema://nova/find-research-records/research-brief@0.1.0"
+          output_schema_ref: "schema://nova/find-research-records/save-ack@0.1.0"
+          objects:
+            - {object_id: "nova.research.brief", name: "Research brief", description: "Stored brief owned by the user", operations: ["create"], scope_rules: ["requesting user's library only", "private by default; publishing not allowed in this recipe"], schema_ref: "schema://nova/find-research-records/research-brief@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/find-research-records/research-brief@0.1.0", output_schema_ref: "schema://nova/find-research-records/save-ack@0.1.0", constraints: ["one entry per idempotency key"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["research:library:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["library entry created"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["duplicate", "unauthorized", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["get by key returns the same brief_id and source count"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.research.library.get"
+          name: "Get brief"
+          description: "Read one stored brief by ID or idempotency key."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/research/library-get", operation: "get"}
+          input_schema_ref: "schema://nova/find-research-records/brief-ref@0.1.0"
+          output_schema_ref: "schema://nova/find-research-records/research-brief@0.1.0"
+          objects:
+            - {object_id: "nova.research.brief", name: "Research brief", description: "Stored brief owned by the user", operations: ["read"], scope_rules: ["requesting user's library only"], schema_ref: "schema://nova/find-research-records/research-brief@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/find-research-records/brief-ref@0.1.0", output_schema_ref: "schema://nova/find-research-records/research-brief@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["research:library:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["returns only the requesting user's briefs"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/find-research-records/research-brief@0.1.0"
+      output_schema_ref: "schema://nova/find-research-records/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the brief with numbered source links to the requesting user only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/find-research-records/research-brief@0.1.0"
+          output_schema_ref: "schema://nova/find-research-records/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/find-research-records/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/find-research-records/research-brief@0.1.0", output_schema_ref: "schema://nova/find-research-records/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received", "every cited source link present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

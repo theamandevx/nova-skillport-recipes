@@ -1,0 +1,271 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.calendar"
+    name: "Nova — Calendar and meetings"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Book one meeting with directory-resolved guests, explicit time-zone conversion, a past-time guard, a video link and an approved calendar invite; sandbox mode for tests."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "MCP"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Calendar database (master busy-store) with an atomic booking function"
+        - "Connected external calendar with event-write access and a no-notifications mode for sandbox tests"
+        - "Contact directory, approval channel and owner notification channel"
+        - "Optional self-hosted video-room provider"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.contacts.directory"
+      name: "Contact directory"
+      description: "Find a guest's email from approved sources only."
+      intent_examples: ["book John for Tuesday", "what's John's email"]
+      input_schema_ref: "schema://nova/book-a-meeting/contact-query@0.1.0"
+      output_schema_ref: "schema://nova/book-a-meeting/guest@0.1.0"
+      risk_class: "medium"
+      preconditions: ["requesting user identified"]
+      postconditions: ["exactly one email per guest, or none"]
+      tools:
+        - tool_id: "nova.contacts.directory.lookup"
+          name: "Look up contact"
+          description: "Search assistant memory, then the contact directory, then ask the user once; never derive an email from a name."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/contacts/lookup", operation: "lookup"}
+          input_schema_ref: "schema://nova/book-a-meeting/contact-query@0.1.0"
+          output_schema_ref: "schema://nova/book-a-meeting/guest@0.1.0"
+          objects:
+            - {object_id: "nova.contacts.contact", name: "Contact", description: "A person and email owned by the user", operations: ["read"], scope_rules: ["requesting user's contacts only"], schema_ref: "schema://nova/book-a-meeting/guest@0.1.0"}
+          variants:
+            - {variant_id: "memory", description: "Assistant memory (read-only), tried first", compatible_environments: [], input_schema_ref: "schema://nova/book-a-meeting/contact-query@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/guest@0.1.0", constraints: ["read-only"], fallback_variant_id: "directory"}
+            - {variant_id: "directory", description: "Contact directory (read-only), tried second", compatible_environments: [], input_schema_ref: "schema://nova/book-a-meeting/contact-query@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/guest@0.1.0", constraints: ["read-only", "fuzzy matches need user confirmation"], fallback_variant_id: "ask-user"}
+            - {variant_id: "ask-user", description: "Human-assisted: the user types the email; never inferred from speech", compatible_environments: [], input_schema_ref: "schema://nova/book-a-meeting/contact-query@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/guest@0.1.0", constraints: ["one question only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["contacts:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found", "ambiguous", "invalid_email"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["exactly one match per guest", "source is memory, directory or user_typed"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.calendar.availability"
+      name: "Calendar availability"
+      description: "Confirm an interval is free and suggest alternatives."
+      intent_examples: ["is Tuesday 2 pm London free"]
+      input_schema_ref: "schema://nova/book-a-meeting/range@0.1.0"
+      output_schema_ref: "schema://nova/book-a-meeting/conflict-result@0.1.0"
+      risk_class: "low"
+      preconditions: ["working hours configured"]
+      postconditions: ["interval free, or alternatives returned"]
+      tools:
+        - tool_id: "nova.calendar.availability.list_calendar"
+          name: "List calendar range"
+          description: "Return bookings and busy blocks in a range for an exact conflict check with buffers."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/calendar/calendar-range", operation: "calendar"}
+          input_schema_ref: "schema://nova/book-a-meeting/range@0.1.0"
+          output_schema_ref: "schema://nova/book-a-meeting/conflict-result@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.busy_interval", name: "Busy interval", description: "Booking or busy block, half-open [start, end)", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/book-a-meeting/conflict-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/book-a-meeting/range@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/conflict-result@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:busy:read_detail"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["range_too_large"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no interval overlaps the requested range when reported free"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.calendar.availability.get_slots"
+          name: "Get slots"
+          description: "Suggest the nearest free slots when the requested time is taken. MCP tool get_slots."
+          invocation: {protocol: "MCP", binding_ref: "binding://nova/calendar/get-slots", operation: "get_slots"}
+          input_schema_ref: "schema://nova/book-a-meeting/slot-query@0.1.0"
+          output_schema_ref: "schema://nova/book-a-meeting/conflict-result@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.busy_interval", name: "Busy interval", description: "Booking or busy block", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/book-a-meeting/conflict-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Owner variant; alternatives only", compatible_environments: [], input_schema_ref: "schema://nova/book-a-meeting/slot-query@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/conflict-result@0.1.0", constraints: ["read-only", "max 3 alternatives"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:availability:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["no_working_hours"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["alternatives are free at query time"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.calendar.booking"
+      name: "Bookings"
+      description: "Create and read bookings in the master busy-store; cancel only as compensation when no external event exists."
+      intent_examples: ["book a 30-minute kickoff with John"]
+      input_schema_ref: "schema://nova/book-a-meeting/request@0.1.0"
+      output_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0"
+      risk_class: "high"
+      preconditions: ["approved content hash (production)", "past-time guard passed", "slot free at commit"]
+      postconditions: ["one confirmed booking per approval"]
+      tools:
+        - tool_id: "nova.calendar.booking.create"
+          name: "Create booking"
+          description: "Re-test the slot and insert the booking in one transaction. MCP tool create_booking."
+          invocation: {protocol: "MCP", binding_ref: "binding://nova/calendar/create-booking", operation: "create_booking"}
+          input_schema_ref: "schema://nova/book-a-meeting/booking-input@0.1.0"
+          output_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.booking", name: "Booking", description: "One meeting hosted by the owner", operations: ["create"], scope_rules: ["owner's tenant only", "owner is the only host", "test flag set in sandbox mode"], schema_ref: "schema://nova/book-a-meeting/booking@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Atomic slot claim; only the default variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/book-a-meeting/booking-input@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0", constraints: ["one booking per approval", "start_utc >= now + 5 min"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:booking:create"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["busy interval created"], idempotency: "required", timeout_seconds: 15, max_attempts: 2, rate_limits: ["one booking run per user at a time"], error_codes: ["slot_taken", "in_past", "beyond_horizon", "too_many_guests"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["readback times equal approved times", "guest list equals approved guests"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.calendar.booking.list"
+          name: "List bookings"
+          description: "Read a booking back by ID or idempotency key. MCP tools list_bookings and upcoming_bookings."
+          invocation: {protocol: "MCP", binding_ref: "binding://nova/calendar/list-bookings", operation: "list_bookings"}
+          input_schema_ref: "schema://nova/book-a-meeting/booking-ref@0.1.0"
+          output_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.booking", name: "Booking", description: "One meeting hosted by the owner", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/book-a-meeting/booking@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/book-a-meeting/booking-ref@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:booking:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["booking found by key after a timed-out create, or confirmed absent"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.calendar.booking.cancel"
+          name: "Cancel booking (compensation only)"
+          description: "Cancel a booking that never reached the external calendar; nobody is notified because no event exists."
+          invocation: {protocol: "MCP", binding_ref: "binding://nova/calendar/cancel-booking", operation: "cancel_booking"}
+          input_schema_ref: "schema://nova/book-a-meeting/booking-ref@0.1.0"
+          output_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.booking", name: "Booking", description: "One meeting hosted by the owner", operations: ["update"], scope_rules: ["status to cancelled only", "only when external_event_ref is null"], schema_ref: "schema://nova/book-a-meeting/booking@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Compensation only; notified bookings are cancelled through recipe 23", compatible_environments: [], input_schema_ref: "schema://nova/book-a-meeting/booking-ref@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0", constraints: ["user chooses this option", "no external event exists"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:booking:cancel"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["busy interval released"], idempotency: "required", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["has_external_event", "already_cancelled"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status cancelled", "no external event with the booking key"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.calendar.video"
+      name: "Video link"
+      description: "Produce the meeting's final video link."
+      intent_examples: ["add a video link"]
+      input_schema_ref: "schema://nova/book-a-meeting/booking-ref@0.1.0"
+      output_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0"
+      risk_class: "low"
+      preconditions: ["booking confirmed", "location online"]
+      postconditions: ["video_link_state final"]
+      tools:
+        - tool_id: "nova.calendar.video.create_link"
+          name: "Create video link"
+          description: "Create the booking's video link; a provisional link is never shown."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/calendar/video-link", operation: "create_link"}
+          input_schema_ref: "schema://nova/book-a-meeting/booking-ref@0.1.0"
+          output_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.booking", name: "Booking", description: "One meeting hosted by the owner", operations: ["update"], scope_rules: ["video_link and video_link_state only"], schema_ref: "schema://nova/book-a-meeting/booking@0.1.0"}
+          variants:
+            - {variant_id: "calendar-native", description: "Link created by the calendar provider with the event (for example Google Meet); preferred when supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/book-a-meeting/booking-ref@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0", constraints: ["created together with the external event"], fallback_variant_id: null}
+            - {variant_id: "self-hosted-room", description: "Open-source video room link issued immediately on the operator's domain; final when issued", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/book-a-meeting/booking-ref@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0", constraints: ["user choice or no native video available; never a silent switch"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:booking:create"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["video room or conference created"], idempotency: "required", timeout_seconds: 30, max_attempts: 2, rate_limits: [], error_codes: ["native_video_unsupported", "link_pending"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["video_link_state is final before the link is shown"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.calendar.invites"
+      name: "Calendar invites"
+      description: "Mirror the booking to the external calendar and notify attendees."
+      intent_examples: ["send John the invite"]
+      input_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0"
+      output_schema_ref: "schema://nova/book-a-meeting/external-event@0.1.0"
+      risk_class: "high"
+      preconditions: ["booking confirmed", "approval valid (production)"]
+      postconditions: ["exactly one external event per booking key"]
+      tools:
+        - tool_id: "nova.calendar.invites.push"
+          name: "Push invite"
+          description: "Create the external event with attendees and the chosen notification mode; an existing event ref turns the call into an update."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/calendar/invite-push", operation: "push"}
+          input_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0"
+          output_schema_ref: "schema://nova/book-a-meeting/external-event@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.external_event", name: "External calendar event", description: "The event on the user's connected calendar", operations: ["create"], scope_rules: ["user's connected calendar only", "attendees equal approved guests"], schema_ref: "schema://nova/book-a-meeting/external-event@0.1.0"}
+          variants:
+            - {variant_id: "send-all", description: "Production: the calendar provider emails every attendee", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/external-event@0.1.0", constraints: ["production mode", "S6 approval valid", "never falls back to send-none"], fallback_variant_id: null}
+            - {variant_id: "send-none", description: "Sandbox and tests: notifications off, sandbox calendar, fictional guests", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/book-a-meeting/booking@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/external-event@0.1.0", constraints: ["sandbox mode only", "never promoted to send-all"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:external:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["external event created", "invitation emails to attendees (send-all only)"], idempotency: "required", timeout_seconds: 30, max_attempts: 2, rate_limits: ["calendar provider quota"], error_codes: ["write_access_missing", "provider_error", "attendee_rejected"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["attendee set equals approved guests", "one event per booking key"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.calendar.invites.get"
+          name: "Get external event"
+          description: "Read the external event by ref or booking key for verification and timeout reconciliation."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/calendar/invite-get", operation: "get"}
+          input_schema_ref: "schema://nova/book-a-meeting/booking-ref@0.1.0"
+          output_schema_ref: "schema://nova/book-a-meeting/external-event@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.external_event", name: "External calendar event", description: "The event on the user's connected calendar", operations: ["read"], scope_rules: ["user's connected calendar only"], schema_ref: "schema://nova/book-a-meeting/external-event@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/book-a-meeting/booking-ref@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/external-event@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:external:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["fields comparable with the approved content"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.approvals.gateway"
+      name: "Approval gateway"
+      description: "Ask the user to approve one specific action bound to a content hash."
+      intent_examples: []
+      input_schema_ref: "schema://nova/book-a-meeting/approval-request@0.1.0"
+      output_schema_ref: "schema://nova/book-a-meeting/approval@0.1.0"
+      risk_class: "low"
+      preconditions: ["approval channel configured"]
+      postconditions: ["decision recorded with hash and time"]
+      tools:
+        - tool_id: "nova.approvals.gateway.request"
+          name: "Request approval"
+          description: "Send approve / edit / cancel with a one-tap token link; expires after 60 minutes."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/approvals/request", operation: "request"}
+          input_schema_ref: "schema://nova/book-a-meeting/approval-request@0.1.0"
+          output_schema_ref: "schema://nova/book-a-meeting/approval@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One decision about one action", operations: ["create"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/book-a-meeting/approval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/book-a-meeting/approval-request@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/approval@0.1.0", constraints: ["one content hash per approval"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["approvals:request"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["approval message to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["approval readable with pending status"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.approvals.gateway.status"
+          name: "Approval status"
+          description: "Read the decision for an approval ID."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/approvals/status", operation: "status"}
+          input_schema_ref: "schema://nova/book-a-meeting/approval-ref@0.1.0"
+          output_schema_ref: "schema://nova/book-a-meeting/approval@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One decision about one action", operations: ["read"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/book-a-meeting/approval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/book-a-meeting/approval-ref@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/approval@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["approvals:request"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["not_found", "expired"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["approved hash equals draft hash"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/book-a-meeting/booking-result@0.1.0"
+      output_schema_ref: "schema://nova/book-a-meeting/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the booking confirmation to the requesting user only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/book-a-meeting/booking-result@0.1.0"
+          output_schema_ref: "schema://nova/book-a-meeting/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/book-a-meeting/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/book-a-meeting/booking-result@0.1.0", output_schema_ref: "schema://nova/book-a-meeting/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

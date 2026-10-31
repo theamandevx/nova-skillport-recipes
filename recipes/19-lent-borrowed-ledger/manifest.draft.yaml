@@ -1,0 +1,148 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.finance"
+    name: "Nova — Finance"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Person-to-person lent/borrowed ledger: confirm before logging, per-currency balances, full audit history, never deletes."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Conversation channel that identifies the user and can show a confirmation"
+        - "Ledger store with append-only entries and an audit table behind dispatcher functions"
+        - "Operator-approved LLM provider for free-text parsing (optional; structured input works without it)"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.finance.ledger"
+      name: "Lent and borrowed ledger"
+      description: "Record, correct, void and report money given to or received from people, with audit history."
+      intent_examples: ["I lent Jane 50 USD", "who owes me money", "remove the last entry for John"]
+      input_schema_ref: "schema://nova/lent-borrowed-ledger/ledger-request@0.1.0"
+      output_schema_ref: "schema://nova/lent-borrowed-ledger/ledger-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["user identified", "confirmation possible in the channel"]
+      postconditions: ["every write matches a confirmation", "every change has an audit row", "nothing deleted"]
+      tools:
+        - tool_id: "nova.finance.ledger.parse"
+          name: "Parse ledger request"
+          description: "Turn a message into an intent and, for record, a draft entry; asks when a field is ambiguous."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/ledger-parse", operation: "parse"}
+          input_schema_ref: "schema://nova/lent-borrowed-ledger/ledger-request@0.1.0"
+          output_schema_ref: "schema://nova/lent-borrowed-ledger/parse-result@0.1.0"
+          objects:
+            - {object_id: "nova.finance.ledger_draft", name: "Draft entry", description: "Unconfirmed entry held in the conversation", operations: ["create"], scope_rules: ["in-run only", "never persisted until confirmed"], schema_ref: "schema://nova/lent-borrowed-ledger/draft-entry@0.1.0"}
+          variants:
+            - {variant_id: "llm", description: "LLM parsing of free text, temperature 0", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/lent-borrowed-ledger/ledger-request@0.1.0", output_schema_ref: "schema://nova/lent-borrowed-ledger/parse-result@0.1.0", constraints: ["no writes", "never infer direction from tone"], fallback_variant_id: null}
+            - {variant_id: "form", description: "Structured fields from a form or command; no LLM", compatible_environments: [], input_schema_ref: "schema://nova/lent-borrowed-ledger/ledger-request@0.1.0", output_schema_ref: "schema://nova/lent-borrowed-ledger/parse-result@0.1.0", constraints: ["no writes"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["llm:parse"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message text sent to the LLM provider (llm variant)"], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: ["<= 2 calls per request"], error_codes: ["unclear", "not_ledger", "provider_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["record drafts have explicit direction, amount and currency, or a question"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.ledger.resolve_counterparty"
+          name: "Resolve counterparty"
+          description: "Exact display-name or alias match; returns candidates when ambiguous."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/ledger-counterparty", operation: "resolve"}
+          input_schema_ref: "schema://nova/lent-borrowed-ledger/counterparty-query@0.1.0"
+          output_schema_ref: "schema://nova/lent-borrowed-ledger/counterparty-match@0.1.0"
+          objects:
+            - {object_id: "nova.finance.ledger_counterparty", name: "Counterparty", description: "A person the user exchanges money with", operations: ["read"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/lent-borrowed-ledger/counterparty@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/lent-borrowed-ledger/counterparty-query@0.1.0", output_schema_ref: "schema://nova/lent-borrowed-ledger/counterparty-match@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:ledger:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["ambiguous", "not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["counterparty belongs to the user"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.ledger.add_counterparty"
+          name: "Add counterparty"
+          description: "Create a new person (or add an alias) after the user confirms; audited."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/ledger-counterparty", operation: "add"}
+          input_schema_ref: "schema://nova/lent-borrowed-ledger/counterparty@0.1.0"
+          output_schema_ref: "schema://nova/lent-borrowed-ledger/counterparty@0.1.0"
+          objects:
+            - {object_id: "nova.finance.ledger_counterparty", name: "Counterparty", description: "A person the user exchanges money with", operations: ["create", "update"], scope_rules: ["requesting user only", "aliases add-only", "confirmation required"], schema_ref: "schema://nova/lent-borrowed-ledger/counterparty@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/lent-borrowed-ledger/counterparty@0.1.0", output_schema_ref: "schema://nova/lent-borrowed-ledger/counterparty@0.1.0", constraints: ["confirmation_ref required"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:ledger:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["counterparty created", "audit row created"], idempotency: "required", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["exists"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["record and audit row readable"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.ledger.find_recent_duplicate"
+          name: "Find recent duplicate"
+          description: "Same counterparty, direction, amount and currency in the last 10 minutes, or the same source message."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/ledger-duplicate", operation: "find_recent_duplicate"}
+          input_schema_ref: "schema://nova/lent-borrowed-ledger/draft-entry@0.1.0"
+          output_schema_ref: "schema://nova/lent-borrowed-ledger/dup-check@0.1.0"
+          objects:
+            - {object_id: "nova.finance.ledger_entry", name: "Entry", description: "One ledger entry", operations: ["read"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/lent-borrowed-ledger/entry@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/lent-borrowed-ledger/draft-entry@0.1.0", output_schema_ref: "schema://nova/lent-borrowed-ledger/dup-check@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:ledger:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: []}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["matches belong to the user"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.ledger.append_entry"
+          name: "Append entry"
+          description: "Insert one confirmed entry and its audit row atomically (plus a new counterparty if confirmed)."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/ledger-append", operation: "append_entry"}
+          input_schema_ref: "schema://nova/lent-borrowed-ledger/draft-entry@0.1.0"
+          output_schema_ref: "schema://nova/lent-borrowed-ledger/entry@0.1.0"
+          objects:
+            - {object_id: "nova.finance.ledger_entry", name: "Entry", description: "One ledger entry", operations: ["create"], scope_rules: ["requesting user only", "confirmation_ref required and unique"], schema_ref: "schema://nova/lent-borrowed-ledger/entry@0.1.0"}
+            - {object_id: "nova.finance.ledger_audit", name: "Audit row", description: "Immutable record of one change", operations: ["create"], scope_rules: ["system-written with every change", "never deleted"], schema_ref: "schema://nova/lent-borrowed-ledger/audit-row@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Security-definer function; only the default variant is supported", compatible_environments: ["PostgreSQL-compatible store"], input_schema_ref: "schema://nova/lent-borrowed-ledger/draft-entry@0.1.0", output_schema_ref: "schema://nova/lent-borrowed-ledger/entry@0.1.0", constraints: ["atomic with audit", "append-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:ledger:write"], consent_required: true, grant_ref: "per-entry confirmation (confirmation_ref)", tenant_binding_required: true}
+          execution: {side_effects: ["entry created", "audit row created"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: ["writes serialised per user"], error_codes: ["confirmation_missing", "confirmation_expired", "exists"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["stored entry equals confirmed draft", "audit row exists", "recomputed balance equals the shown after-balance"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.ledger.change_entry"
+          name: "Void or correct entry"
+          description: "Void an entry, or void it and append a linked replacement, in one transaction with audit rows; never deletes or edits amounts in place."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/ledger-change", operation: "change_entry"}
+          input_schema_ref: "schema://nova/lent-borrowed-ledger/change-request@0.1.0"
+          output_schema_ref: "schema://nova/lent-borrowed-ledger/ledger-result@0.1.0"
+          objects:
+            - {object_id: "nova.finance.ledger_entry", name: "Entry", description: "One ledger entry", operations: ["update", "create"], scope_rules: ["fields on void: status, voided_at, void_reason", "replacement linked by replaces_entry_id"], schema_ref: "schema://nova/lent-borrowed-ledger/entry@0.1.0"}
+            - {object_id: "nova.finance.ledger_audit", name: "Audit row", description: "Immutable record of one change", operations: ["create"], scope_rules: ["before/after captured"], schema_ref: "schema://nova/lent-borrowed-ledger/audit-row@0.1.0"}
+          variants:
+            - {variant_id: "void", description: "Set status voided with a reason", compatible_environments: ["PostgreSQL-compatible store"], input_schema_ref: "schema://nova/lent-borrowed-ledger/change-request@0.1.0", output_schema_ref: "schema://nova/lent-borrowed-ledger/ledger-result@0.1.0", constraints: ["confirmation required", "entry must be active"], fallback_variant_id: null}
+            - {variant_id: "correct", description: "Void the original and append a replacement atomically", compatible_environments: ["PostgreSQL-compatible store"], input_schema_ref: "schema://nova/lent-borrowed-ledger/change-request@0.1.0", output_schema_ref: "schema://nova/lent-borrowed-ledger/ledger-result@0.1.0", constraints: ["confirmation required", "replacement validated like a new entry"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:ledger:write"], consent_required: true, grant_ref: "per-change confirmation (confirmation_ref)", tenant_binding_required: true}
+          execution: {side_effects: ["entry voided", "replacement created (correct)", "audit rows created"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: ["writes serialised per user"], error_codes: ["already_voided", "not_owner", "confirmation_missing"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["history still shows the voided entry", "balance recomputed correctly"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.ledger.balance"
+          name: "Balances"
+          description: "Per-person, per-currency balance = sum(gave) - sum(received) over active entries; never netted across currencies."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/ledger-balance", operation: "balance"}
+          input_schema_ref: "schema://nova/lent-borrowed-ledger/history-query@0.1.0"
+          output_schema_ref: "schema://nova/lent-borrowed-ledger/balance@0.1.0"
+          objects:
+            - {object_id: "nova.finance.ledger_balance", name: "Balance", description: "Derived per-person, per-currency balance", operations: ["read"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/lent-borrowed-ledger/balance@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/lent-borrowed-ledger/history-query@0.1.0", output_schema_ref: "schema://nova/lent-borrowed-ledger/balance@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:ledger:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["equals independent recomputation from history"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.finance.ledger.history"
+          name: "History"
+          description: "Entries (including voided on request) and the full audit trail."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/finance/ledger-history", operation: "history"}
+          input_schema_ref: "schema://nova/lent-borrowed-ledger/history-query@0.1.0"
+          output_schema_ref: "schema://nova/lent-borrowed-ledger/history@0.1.0"
+          objects:
+            - {object_id: "nova.finance.ledger_audit", name: "Audit row", description: "Immutable record of one change", operations: ["read"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/lent-borrowed-ledger/audit-row@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/lent-borrowed-ledger/history-query@0.1.0", output_schema_ref: "schema://nova/lent-borrowed-ledger/history@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["finance:ledger:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["voided entries present when requested", "every entry has an audit row"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

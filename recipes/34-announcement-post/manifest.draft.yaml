@@ -1,0 +1,192 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.content"
+    name: "Nova — Content"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Turn the user's own news into a lead-with-the-news announcement draft using only facts from their brief; queued for approval, never published here."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Voice profile (brand colours optional)"
+        - "A ready cheap-tier model (fact extraction) and pro-tier model (drafting); medium variants optional"
+        - "Content approval queue in the user's tenant"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.content.voice"
+      name: "Voice profile"
+      description: "Hold the user's writing voice and brand colours."
+      intent_examples: []
+      input_schema_ref: "schema://nova/announcement-post/voice-query@0.1.0"
+      output_schema_ref: "schema://nova/announcement-post/voice-profile@0.1.0"
+      risk_class: "low"
+      preconditions: ["requesting user identified"]
+      postconditions: ["guide returned (default guide disclosed when none)"]
+      tools:
+        - tool_id: "nova.content.voice.get_profile"
+          name: "Get voice profile"
+          description: "Return style guide, examples, banned phrases and brand colours."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/voice", operation: "get_profile"}
+          input_schema_ref: "schema://nova/announcement-post/voice-query@0.1.0"
+          output_schema_ref: "schema://nova/announcement-post/voice-profile@0.1.0"
+          objects:
+            - {object_id: "nova.content.voice_profile", name: "Voice profile", description: "The user's writing style, examples and brand colours", operations: ["read"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/announcement-post/voice-profile@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/announcement-post/voice-query@0.1.0", output_schema_ref: "schema://nova/announcement-post/voice-profile@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:voice:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["profile_missing"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["guide present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.facts"
+      name: "Fact sheet"
+      description: "Turn a rough brief into atomic facts, each with a verbatim span from the brief."
+      intent_examples: ["I've got something to announce"]
+      input_schema_ref: "schema://nova/announcement-post/request@0.1.0"
+      output_schema_ref: "schema://nova/announcement-post/fact-sheet@0.1.0"
+      risk_class: "low"
+      preconditions: ["ownership_confirmed is true"]
+      postconditions: ["every span occurs verbatim in the brief"]
+      tools:
+        - tool_id: "nova.content.facts.extract"
+          name: "Extract facts"
+          description: "Return one-sentence news plus atomic facts with verbatim spans and kinds."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/facts", operation: "extract"}
+          input_schema_ref: "schema://nova/announcement-post/request@0.1.0"
+          output_schema_ref: "schema://nova/announcement-post/fact-sheet@0.1.0"
+          objects:
+            - {object_id: "nova.content.fact_sheet", name: "Fact sheet", description: "Allowed claims for one announcement", operations: ["create"], scope_rules: ["run and queued post only"], schema_ref: "schema://nova/announcement-post/fact-sheet@0.1.0"}
+          variants:
+            - {variant_id: "cheap", description: "Default low-cost model", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/announcement-post/request@0.1.0", output_schema_ref: "schema://nova/announcement-post/fact-sheet@0.1.0", constraints: ["no automatic tier switch"], fallback_variant_id: null}
+            - {variant_id: "medium", description: "Explicit choice for long or messy briefs", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/announcement-post/request@0.1.0", output_schema_ref: "schema://nova/announcement-post/fact-sheet@0.1.0", constraints: ["explicit selection only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["llm:invoke:cheap", "llm:invoke:medium"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["brief sent to the model provider"], idempotency: "not_applicable", timeout_seconds: 30, max_attempts: 2, rate_limits: [], error_codes: ["tier_unavailable", "non_verbatim_span", "no_news_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every span verbatim in brief", "news maps to at least one fact"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.draft"
+      name: "Post drafting"
+      description: "Draft an announcement that states the news in its first line, using only fact-sheet items."
+      intent_examples: ["announce our 2.0 launch on LinkedIn"]
+      input_schema_ref: "schema://nova/announcement-post/fact-sheet@0.1.0"
+      output_schema_ref: "schema://nova/announcement-post/announcement-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["fact sheet built", "selected tier ready"]
+      postconditions: ["draft parsed with a claim map"]
+      tools:
+        - tool_id: "nova.content.draft.announce"
+          name: "Draft announcement"
+          description: "Brief as base text; facts only from the fact sheet; first-person builder voice; caption and image prompt split by a delimiter line."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/draft-announce", operation: "announce"}
+          input_schema_ref: "schema://nova/announcement-post/fact-sheet@0.1.0"
+          output_schema_ref: "schema://nova/announcement-post/announcement-result@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Draft announcement (not yet queued)", operations: ["create"], scope_rules: ["run only until queued"], schema_ref: "schema://nova/announcement-post/post@0.1.0"}
+          variants:
+            - {variant_id: "pro", description: "Default; reasoning-capable top tier; ~4000 output-token headroom; empty completion = failure", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/announcement-post/fact-sheet@0.1.0", output_schema_ref: "schema://nova/announcement-post/announcement-result@0.1.0", constraints: ["no automatic tier switch"], fallback_variant_id: null}
+            - {variant_id: "medium", description: "Explicit choice only; tier recorded", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/announcement-post/fact-sheet@0.1.0", output_schema_ref: "schema://nova/announcement-post/announcement-result@0.1.0", constraints: ["explicit selection only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["llm:invoke:pro", "llm:invoke:medium"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["brief, fact sheet and voice profile sent to the model provider"], idempotency: "not_applicable", timeout_seconds: 90, max_attempts: 2, rate_limits: ["per-draft token cap TBD"], error_codes: ["tier_unavailable", "empty_completion", "parse_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["claim map present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.verify"
+      name: "Draft checks"
+      description: "Platform format rules and claim-to-brief mapping."
+      intent_examples: []
+      input_schema_ref: "schema://nova/announcement-post/announcement-result@0.1.0"
+      output_schema_ref: "schema://nova/announcement-post/verify-report@0.1.0"
+      risk_class: "low"
+      preconditions: ["draft parsed"]
+      postconditions: ["pass, or failures listed"]
+      tools:
+        - tool_id: "nova.content.verify.format"
+          name: "Check format"
+          description: "Apply the LinkedIn or X announcement profile."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/verify-format", operation: "format"}
+          input_schema_ref: "schema://nova/announcement-post/announcement-result@0.1.0"
+          output_schema_ref: "schema://nova/announcement-post/verify-report@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Draft announcement", operations: ["read"], scope_rules: ["run only"], schema_ref: "schema://nova/announcement-post/post@0.1.0"}
+          variants:
+            - {variant_id: "linkedin", description: "900-1900 chars (900-1400 ok for thin briefs), hook <= 210, 0-3 hashtags, no link in body", compatible_environments: [], input_schema_ref: "schema://nova/announcement-post/announcement-result@0.1.0", output_schema_ref: "schema://nova/announcement-post/verify-report@0.1.0", constraints: ["deterministic"], fallback_variant_id: null}
+            - {variant_id: "x", description: "<= 270 chars, one idea, no hashtags, no links (bare domains detected; version numbers not flagged)", compatible_environments: [], input_schema_ref: "schema://nova/announcement-post/announcement-result@0.1.0", output_schema_ref: "schema://nova/announcement-post/verify-report@0.1.0", constraints: ["deterministic"], fallback_variant_id: null}
+          authorization: {required: false, identity_provider: "TBD", required_scopes: [], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 1, rate_limits: [], error_codes: ["length_out_of_range", "hook_too_long", "link_present", "hashtag_present", "banned_phrase"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["all profile rules pass"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.verify.claims"
+          name: "Check claims"
+          description: "Every factual sentence maps to a fact; specifics present in the brief; no unbacked superlatives; news in the hook; third-party names flagged."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/verify-claims", operation: "claims"}
+          input_schema_ref: "schema://nova/announcement-post/announcement-result@0.1.0"
+          output_schema_ref: "schema://nova/announcement-post/verify-report@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Draft announcement", operations: ["read"], scope_rules: ["run only"], schema_ref: "schema://nova/announcement-post/post@0.1.0"}
+          variants:
+            - {variant_id: "rules", description: "Default deterministic checks", compatible_environments: [], input_schema_ref: "schema://nova/announcement-post/announcement-result@0.1.0", output_schema_ref: "schema://nova/announcement-post/verify-report@0.1.0", constraints: [], fallback_variant_id: null}
+            - {variant_id: "llm-check", description: "Optional, on a model different from the drafter; can only flag", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/announcement-post/announcement-result@0.1.0", output_schema_ref: "schema://nova/announcement-post/verify-report@0.1.0", constraints: ["operator-enabled only", "model differs from drafter"], fallback_variant_id: null}
+          authorization: {required: false, identity_provider: "TBD", required_scopes: [], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 1, rate_limits: [], error_codes: ["unmapped_claim", "ungrounded_specific", "unbacked_superlative", "news_buried", "unconfirmed_mention"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["100% of claims mapped to the brief"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.queue"
+      name: "Content approval queue"
+      description: "Hold announcement drafts with their fact sheet and approval state."
+      intent_examples: ["approve the announcement"]
+      input_schema_ref: "schema://nova/announcement-post/post@0.1.0"
+      output_schema_ref: "schema://nova/announcement-post/post@0.1.0"
+      risk_class: "medium"
+      preconditions: ["user's tenant exists"]
+      postconditions: ["no publishing from this recipe; embargo respected"]
+      tools:
+        - tool_id: "nova.content.queue.save_draft"
+          name: "Save draft"
+          description: "Insert a draft with fact sheet, frame, platform and embargo; existing client key returns the existing post."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/queue-save", operation: "save_draft"}
+          input_schema_ref: "schema://nova/announcement-post/post@0.1.0"
+          output_schema_ref: "schema://nova/announcement-post/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Queued announcement", operations: ["create"], scope_rules: ["user's tenant only", "status draft on insert"], schema_ref: "schema://nova/announcement-post/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/announcement-post/post@0.1.0", output_schema_ref: "schema://nova/announcement-post/post@0.1.0", constraints: ["idempotent on client key"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:queue:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["queue row created"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["duplicate", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read back with matching content hash"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.queue.edit"
+          name: "Edit draft"
+          description: "Change a non-published draft; voids prior approval; checks re-run."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/queue-edit", operation: "edit"}
+          input_schema_ref: "schema://nova/announcement-post/post@0.1.0"
+          output_schema_ref: "schema://nova/announcement-post/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Queued announcement", operations: ["update"], scope_rules: ["hook, body, image_prompt only", "not when published"], schema_ref: "schema://nova/announcement-post/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/announcement-post/post@0.1.0", output_schema_ref: "schema://nova/announcement-post/post@0.1.0", constraints: ["approval voided on edit"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:queue:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["draft content changed"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["already_published", "not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["new content hash stored"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.queue.set_status"
+          name: "Set draft status"
+          description: "approved or rejected on the user's action; approval before embargo is recorded as approved-with-embargo."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/queue-status", operation: "set_status"}
+          input_schema_ref: "schema://nova/announcement-post/post-status@0.1.0"
+          output_schema_ref: "schema://nova/announcement-post/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "Queued announcement", operations: ["update"], scope_rules: ["status only", "approved or rejected only in this recipe"], schema_ref: "schema://nova/announcement-post/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/announcement-post/post-status@0.1.0", output_schema_ref: "schema://nova/announcement-post/post@0.1.0", constraints: ["user approval record required"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:queue:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["draft status changed"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["invalid_transition", "approval_missing"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["status read back", "approval hash equals content hash"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

@@ -1,0 +1,202 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.content"
+    name: "Nova — Content studio"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Generate a layered, platform-sized image for a post draft with an explicitly chosen provider and record its cost."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Content store with post drafts"
+        - "At least one image-generation provider (provider A and/or provider B)"
+        - "LLM for prompt composition"
+        - "Durable object storage bucket for images"
+        - "Append-only usage ledger and an owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.content.posts"
+      name: "Post drafts"
+      description: "Read a post draft and attach an image to it."
+      intent_examples: ["make an image for post 42"]
+      input_schema_ref: "schema://nova/post-image/request@0.1.0"
+      output_schema_ref: "schema://nova/post-image/post@0.1.0"
+      risk_class: "low"
+      preconditions: ["requesting user identified", "post belongs to the user's tenant"]
+      postconditions: ["post image fields updated; previous image kept in history"]
+      tools:
+        - tool_id: "nova.content.posts.get"
+          name: "Get post"
+          description: "Return one post with platform, stage, hook, body and current image fields."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/posts", operation: "get"}
+          input_schema_ref: "schema://nova/post-image/request@0.1.0"
+          output_schema_ref: "schema://nova/post-image/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "A social post draft owned by the user", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/post-image/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/post-image/request@0.1.0", output_schema_ref: "schema://nova/post-image/post@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:posts:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found", "forbidden"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["post tenant equals requesting tenant"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.posts.attach_image"
+          name: "Attach image"
+          description: "Set image_ref, image_prompt, image_status and image_meta; push the previous image onto image_history."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/posts", operation: "attach_image"}
+          input_schema_ref: "schema://nova/post-image/image-result@0.1.0"
+          output_schema_ref: "schema://nova/post-image/post@0.1.0"
+          objects:
+            - {object_id: "nova.content.post", name: "Post", description: "A social post draft owned by the user", operations: ["update"], scope_rules: ["image fields only", "not allowed once the post is published", "previous image never deleted"], schema_ref: "schema://nova/post-image/post@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/post-image/image-result@0.1.0", output_schema_ref: "schema://nova/post-image/post@0.1.0", constraints: ["conditional on previous image_ref"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:posts:write_image"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["post image fields change"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["conflict", "published"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read-back image_ref equals stored ref"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.image_prompt"
+      name: "Layered image prompt"
+      description: "Turn a post into a five-layer, platform-sized image prompt."
+      intent_examples: []
+      input_schema_ref: "schema://nova/post-image/post@0.1.0"
+      output_schema_ref: "schema://nova/post-image/image-prompt@0.1.0"
+      risk_class: "low"
+      preconditions: ["post text available", "preset resolved"]
+      postconditions: ["five layers present", "headline within word cap", "safe-zone sentence present"]
+      tools:
+        - tool_id: "nova.content.image_prompt.compose"
+          name: "Compose image prompt"
+          description: "LLM composes atmosphere, hero motif, headline, icon rows and brand layer with size and safe-zone instructions; facts only from the post."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/image-prompt", operation: "compose"}
+          input_schema_ref: "schema://nova/post-image/post@0.1.0"
+          output_schema_ref: "schema://nova/post-image/image-prompt@0.1.0"
+          objects:
+            - {object_id: "nova.content.image_prompt", name: "Image prompt", description: "Layered prompt linked to one post", operations: ["create"], scope_rules: ["linked post only"], schema_ref: "schema://nova/post-image/image-prompt@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/post-image/post@0.1.0", output_schema_ref: "schema://nova/post-image/image-prompt@0.1.0", constraints: ["no third-party logos", "no real-person likeness", "no facts beyond the post"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:posts:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 30, max_attempts: 2, rate_limits: [], error_codes: ["rule_violation"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["all five layers present", "every number and name appears in the post"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.image"
+      name: "Image generation"
+      description: "Generate one image with an explicitly chosen provider; no silent fallback between providers."
+      intent_examples: ["generate the image with provider B"]
+      input_schema_ref: "schema://nova/post-image/image-prompt@0.1.0"
+      output_schema_ref: "schema://nova/post-image/image-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["prompt verified", "provider ready", "estimate within cap"]
+      postconditions: ["image matches preset dimensions", "one usage row per call"]
+      tools:
+        - tool_id: "nova.content.image.list_providers"
+          name: "List image providers"
+          description: "Return each provider's ready flag, reason, supported sizes and date-stamped price per image."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/image-providers", operation: "list_providers"}
+          input_schema_ref: "schema://nova/post-image/request@0.1.0"
+          output_schema_ref: "schema://nova/post-image/provider-list@0.1.0"
+          objects:
+            - {object_id: "nova.content.image_provider", name: "Image provider", description: "A configured image-generation provider", operations: ["read"], scope_rules: [], schema_ref: "schema://nova/post-image/provider-list@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/post-image/request@0.1.0", output_schema_ref: "schema://nova/post-image/provider-list@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["image:providers:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["provider_not_ready"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every provider carries ready and reason"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.image.generate"
+          name: "Generate image"
+          description: "Generate one image from a verified prompt with the chosen provider variant."
+          invocation: {protocol: "OpenAPI", binding_ref: "binding://nova/content/image-generate", operation: "generate"}
+          input_schema_ref: "schema://nova/post-image/image-prompt@0.1.0"
+          output_schema_ref: "schema://nova/post-image/image-result@0.1.0"
+          objects:
+            - {object_id: "nova.content.image_asset", name: "Image asset", description: "Generated image bytes before storage", operations: ["create"], scope_rules: ["linked post only"], schema_ref: "schema://nova/post-image/image-result@0.1.0"}
+          variants:
+            - {variant_id: "provider-a", description: "Multimodal model with image output via a standard chat-completions interface; base64 data URL; near-4:5 portrait; stronger at dense legible text", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/post-image/image-prompt@0.1.0", output_schema_ref: "schema://nova/post-image/image-result@0.1.0", constraints: ["binding binding://nova/content/image-provider-a (UNVERIFIED)", "explicit selection only", "estimate within cap"], fallback_variant_id: null}
+            - {variant_id: "provider-b", description: "Dedicated image API with fixed sizes 1024x1024, 1024x1536, 1536x1024 and a quality setting; strong photoreal renders", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/post-image/image-prompt@0.1.0", output_schema_ref: "schema://nova/post-image/image-result@0.1.0", constraints: ["binding binding://nova/content/image-provider-b (UNVERIFIED)", "explicit selection only", "sizes limited to the three listed", "estimate within cap"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["image:generate:provider-a or image:generate:provider-b (chosen variant only)"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["provider charges"], idempotency: "required", timeout_seconds: 120, max_attempts: 2, rate_limits: ["1 generation in flight per post", "3 generations per post per run"], error_codes: ["content_policy_refusal", "provider_not_ready", "over_budget", "no_image_returned", "timeout"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["response decodes to an image", "aspect within 2 percent of requested size"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.assets"
+      name: "Asset storage"
+      description: "Store generated images durably under a content-hash path."
+      intent_examples: []
+      input_schema_ref: "schema://nova/post-image/image-result@0.1.0"
+      output_schema_ref: "schema://nova/post-image/image-result@0.1.0"
+      risk_class: "low"
+      preconditions: ["image validated"]
+      postconditions: ["stored hash equals computed hash"]
+      tools:
+        - tool_id: "nova.content.assets.upload"
+          name: "Upload asset"
+          description: "Write the image to posts/<post_id>/<content_hash> in the image bucket."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/assets", operation: "upload"}
+          input_schema_ref: "schema://nova/post-image/image-result@0.1.0"
+          output_schema_ref: "schema://nova/post-image/image-result@0.1.0"
+          objects:
+            - {object_id: "nova.content.image_asset", name: "Image asset", description: "Stored image object", operations: ["create"], scope_rules: ["user's image bucket only", "no delete"], schema_ref: "schema://nova/post-image/image-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/post-image/image-result@0.1.0", output_schema_ref: "schema://nova/post-image/image-result@0.1.0", constraints: ["content-hash path"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:assets:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["object created in the image bucket"], idempotency: "required", timeout_seconds: 30, max_attempts: 3, rate_limits: [], error_codes: ["storage_unavailable", "too_large"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read-back hash equals content_hash"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.usage.ledger"
+      name: "Usage ledger"
+      description: "Append-only record of AI usage and spend, attributed to a job."
+      intent_examples: []
+      input_schema_ref: "schema://nova/post-image/usage-record@0.1.0"
+      output_schema_ref: "schema://nova/post-image/usage-record@0.1.0"
+      risk_class: "low"
+      preconditions: ["a paid call completed"]
+      postconditions: ["exactly one row per generation call"]
+      tools:
+        - tool_id: "nova.usage.ledger.record"
+          name: "Record usage"
+          description: "Append one usage row with provider, model, size, quality, cost, cost_basis and meta.job = content:post-image."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/usage/ledger", operation: "record"}
+          input_schema_ref: "schema://nova/post-image/usage-record@0.1.0"
+          output_schema_ref: "schema://nova/post-image/usage-record@0.1.0"
+          objects:
+            - {object_id: "nova.usage.record", name: "Usage row", description: "One AI usage and cost entry", operations: ["create"], scope_rules: ["requesting tenant's ledger only", "append-only"], schema_ref: "schema://nova/post-image/usage-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/post-image/usage-record@0.1.0", output_schema_ref: "schema://nova/post-image/usage-record@0.1.0", constraints: ["unique idempotency_key"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["usage:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["ledger row appended"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["duplicate_key"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["row readable by usage_id", "cost_basis set"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/post-image/image-result@0.1.0"
+      output_schema_ref: "schema://nova/post-image/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the image review package to the requesting user only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/post-image/image-result@0.1.0"
+          output_schema_ref: "schema://nova/post-image/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/post-image/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/post-image/image-result@0.1.0", output_schema_ref: "schema://nova/post-image/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

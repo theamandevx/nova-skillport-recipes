@@ -1,0 +1,334 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.sales"
+    name: "Nova — Sales"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Target design (rebuild) for personalised partner outreach as Gmail drafts only: approved contacts, daily cap, uniqueness gate, opt-out enforcement, follow-ups on observed sends, threaded reply drafts."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Contact store with an owner review gate, warnings and suppression"
+        - "Sending mailbox with a draft-only adapter (no send operation)"
+        - "Approved offer configuration with figures, approval hash and attachment"
+        - "Signature with postal address and opt-out line"
+        - "Structured-output LLM provider"
+        - "Owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.outreach.queue"
+      name: "Outreach queues"
+      description: "Budget, first-touch, follow-up and reply queues for one campaign."
+      intent_examples: ["how many outreach drafts are left today"]
+      input_schema_ref: "schema://nova/partner-outreach-drafts/campaign-config@0.1.0"
+      output_schema_ref: "schema://nova/partner-outreach-drafts/queue-item@0.1.0"
+      risk_class: "medium"
+      preconditions: ["campaign activated by the owner"]
+      postconditions: ["only approved, unsuppressed contacts returned"]
+      tools:
+        - tool_id: "nova.outreach.queue.budget"
+          name: "Daily budget"
+          description: "Drafts recorded today in the store and the remaining cap, plus the reply cap."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/outreach/budget", operation: "budget"}
+          input_schema_ref: "schema://nova/partner-outreach-drafts/queue-query@0.1.0"
+          output_schema_ref: "schema://nova/partner-outreach-drafts/budget@0.1.0"
+          objects:
+            - {object_id: "nova.outreach.touch", name: "Touch", description: "Recorded outreach drafts", operations: ["read"], scope_rules: ["campaign only", "owner local date"], schema_ref: "schema://nova/partner-outreach-drafts/budget@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/partner-outreach-drafts/queue-query@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/budget@0.1.0", constraints: ["read-only", "counted from the store"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["outreach:queue:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["left equals cap minus drafted_today, never negative"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.outreach.queue.first_touch"
+          name: "First-touch queue"
+          description: "Approved contacts with an email, no blocking warnings, not suppressed, replied or booked, no prior draft, one per inbox group."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/outreach/first-touch-queue", operation: "first_touch"}
+          input_schema_ref: "schema://nova/partner-outreach-drafts/queue-query@0.1.0"
+          output_schema_ref: "schema://nova/partner-outreach-drafts/queue-item@0.1.0"
+          objects:
+            - {object_id: "nova.outreach.contact", name: "Outreach contact", description: "A contact approved by the owner", operations: ["read"], scope_rules: ["review_status approved only", "owner's tenant only"], schema_ref: "schema://nova/partner-outreach-drafts/contact@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/partner-outreach-drafts/queue-query@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/queue-item@0.1.0", constraints: ["read-only", "never returns pending, rejected or suppressed contacts"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["outreach:queue:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every item approved and unsuppressed"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.outreach.queue.follow_up"
+          name: "Follow-up queue"
+          description: "Contacts whose previous step was observed sent at least the configured days ago, with no reply and not suppressed or paused."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/outreach/follow-up-queue", operation: "follow_up"}
+          input_schema_ref: "schema://nova/partner-outreach-drafts/queue-query@0.1.0"
+          output_schema_ref: "schema://nova/partner-outreach-drafts/queue-item@0.1.0"
+          objects:
+            - {object_id: "nova.outreach.touch", name: "Touch", description: "Observed sends per contact and step", operations: ["read"], scope_rules: ["sent_observed touches only"], schema_ref: "schema://nova/partner-outreach-drafts/queue-item@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/partner-outreach-drafts/queue-query@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/queue-item@0.1.0", constraints: ["clock starts at observed SENT, never at draft creation"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["outreach:queue:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every item has sent_observed_at", "no later inbound message"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.outreach.queue.replies"
+          name: "Reply queue"
+          description: "Detected replies not yet handled; items without thread ID and message ID are excluded."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/outreach/reply-queue", operation: "replies"}
+          input_schema_ref: "schema://nova/partner-outreach-drafts/queue-query@0.1.0"
+          output_schema_ref: "schema://nova/partner-outreach-drafts/queue-item@0.1.0"
+          objects:
+            - {object_id: "nova.outreach.touch", name: "Touch", description: "Inbound replies per contact", operations: ["read"], scope_rules: ["non-null thread_id and last_message_id only"], schema_ref: "schema://nova/partner-outreach-drafts/queue-item@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/partner-outreach-drafts/queue-query@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/queue-item@0.1.0", constraints: ["read-only", "backoff respected"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["outreach:queue:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every item has thread_id and last_message_id"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.outreach.compose"
+      name: "Outreach composition"
+      description: "Write subject and personalised lines; code assembles the approved offer, CTA, opt-out line and signature."
+      intent_examples: []
+      input_schema_ref: "schema://nova/partner-outreach-drafts/compose-request@0.1.0"
+      output_schema_ref: "schema://nova/partner-outreach-drafts/composed@0.1.0"
+      risk_class: "medium"
+      preconditions: ["offer approval hash matches"]
+      postconditions: ["no figures written by the LLM", "opt-out line and signature present"]
+      tools:
+        - tool_id: "nova.outreach.compose.write"
+          name: "Write outreach text"
+          description: "Variant selected deterministically by item type; contact notes and reply text are untrusted data."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/outreach/compose", operation: "write"}
+          input_schema_ref: "schema://nova/partner-outreach-drafts/compose-request@0.1.0"
+          output_schema_ref: "schema://nova/partner-outreach-drafts/composed@0.1.0"
+          objects:
+            - {object_id: "nova.outreach.composed_text", name: "Composed text", description: "Subject and body of one draft", operations: ["create"], scope_rules: ["in memory until saved as a draft"], schema_ref: "schema://nova/partner-outreach-drafts/composed@0.1.0"}
+          variants:
+            - {variant_id: "first-touch", description: "LLM subject and 15-40 word hook; seeded neutral framing and claim-word gate when notes are thin", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/partner-outreach-drafts/compose-request@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/composed@0.1.0", constraints: ["no digits or currency in LLM text"], fallback_variant_id: null}
+            - {variant_id: "follow-up-1", description: "LLM adds exactly one new point, at most 60 words", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/partner-outreach-drafts/compose-request@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/composed@0.1.0", constraints: ["threaded only"], fallback_variant_id: null}
+            - {variant_id: "follow-up-2", description: "Deterministic seeded close-out template; no LLM", compatible_environments: [], input_schema_ref: "schema://nova/partner-outreach-drafts/compose-request@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/composed@0.1.0", constraints: ["threaded only"], fallback_variant_id: null}
+            - {variant_id: "reply", description: "LLM answer to a classified reply, at most 120 words, grounded in the reply and the approved offer", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/partner-outreach-drafts/compose-request@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/composed@0.1.0", constraints: ["never for opt_out, bounce or auto_reply"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["outreach:compose"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["contact notes or reply text sent to the LLM provider"], idempotency: "not_applicable", timeout_seconds: 60, max_attempts: 2, rate_limits: ["token cap per day TBD"], error_codes: ["llm_error", "rule_violation"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["figures equal configuration", "no claim words when facts are poor"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.outreach.uniqueness"
+      name: "Uniqueness gate"
+      description: "Reject drafts whose personalised text is too similar to earlier drafts."
+      intent_examples: []
+      input_schema_ref: "schema://nova/partner-outreach-drafts/uniqueness-request@0.1.0"
+      output_schema_ref: "schema://nova/partner-outreach-drafts/uniqueness-result@0.1.0"
+      risk_class: "low"
+      preconditions: ["campaign corpus available"]
+      postconditions: ["max similarity at most the threshold for passed drafts"]
+      tools:
+        - tool_id: "nova.outreach.uniqueness.check"
+          name: "Similarity check"
+          description: "Word-trigram (3-word shingle) Jaccard similarity against the corpus and today's batch; fixed approved blocks excluded."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/outreach/uniqueness", operation: "check"}
+          input_schema_ref: "schema://nova/partner-outreach-drafts/uniqueness-request@0.1.0"
+          output_schema_ref: "schema://nova/partner-outreach-drafts/uniqueness-result@0.1.0"
+          objects:
+            - {object_id: "nova.outreach.shingle_corpus", name: "Shingle corpus", description: "Hashed trigrams of earlier drafts", operations: ["read"], scope_rules: ["campaign only", "hashes only"], schema_ref: "schema://nova/partner-outreach-drafts/uniqueness-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/partner-outreach-drafts/uniqueness-request@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/uniqueness-result@0.1.0", constraints: ["deterministic", "threshold default 0.25"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["outreach:compose"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 1, rate_limits: [], error_codes: ["corpus_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["same input gives the same score"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.outreach.suppression"
+      name: "Suppression"
+      description: "Opt-out, bounce and complaint enforcement for outreach."
+      intent_examples: []
+      input_schema_ref: "schema://nova/partner-outreach-drafts/suppression-query@0.1.0"
+      output_schema_ref: "schema://nova/partner-outreach-drafts/suppression-entry@0.1.0"
+      risk_class: "high"
+      preconditions: []
+      postconditions: ["suppressed contacts never drafted and never reactivated by the agent"]
+      tools:
+        - tool_id: "nova.outreach.suppression.check"
+          name: "Check suppression"
+          description: "Return whether the contact, address or domain is suppressed."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/outreach/suppression-check", operation: "check"}
+          input_schema_ref: "schema://nova/partner-outreach-drafts/suppression-query@0.1.0"
+          output_schema_ref: "schema://nova/partner-outreach-drafts/suppression-entry@0.1.0"
+          objects:
+            - {object_id: "nova.outreach.suppression_entry", name: "Suppression entry", description: "A do-not-contact record", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/partner-outreach-drafts/suppression-entry@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/partner-outreach-drafts/suppression-query@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/suppression-entry@0.1.0", constraints: ["read-only", "unavailable means do not draft"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["outreach:suppression:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["opt-outs, bounces and complaints included"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.outreach.suppression.suppress"
+          name: "Suppress"
+          description: "Record an opt-out, bounce or complaint; removes the contact from every queue. Unsuppress is an owner-only action outside this recipe and lands on paused."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/outreach/suppress", operation: "suppress"}
+          input_schema_ref: "schema://nova/partner-outreach-drafts/suppression-entry@0.1.0"
+          output_schema_ref: "schema://nova/partner-outreach-drafts/suppression-entry@0.1.0"
+          objects:
+            - {object_id: "nova.outreach.suppression_entry", name: "Suppression entry", description: "A do-not-contact record", operations: ["create"], scope_rules: ["owner's tenant only", "never deleted by the agent"], schema_ref: "schema://nova/partner-outreach-drafts/suppression-entry@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/partner-outreach-drafts/suppression-entry@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/suppression-entry@0.1.0", constraints: ["disabled in dry_run"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["outreach:suppression:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["contact suppressed"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["contact absent from every queue after suppression"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.mail.observe"
+      name: "Thread observation"
+      description: "Detect the owner's sent messages and inbound replies in outreach threads."
+      intent_examples: []
+      input_schema_ref: "schema://nova/partner-outreach-drafts/thread-ref@0.1.0"
+      output_schema_ref: "schema://nova/partner-outreach-drafts/thread-state@0.1.0"
+      risk_class: "low"
+      preconditions: ["thread ID recorded for the touch"]
+      postconditions: ["sent detection based on a SENT-labelled message, never on draft disappearance"]
+      tools:
+        - tool_id: "nova.mail.observe.thread_state"
+          name: "Thread state"
+          description: "Return SENT-labelled messages from the owner after the draft, and inbound messages after the owner's last send, matched by thread."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/thread-state", operation: "thread_state"}
+          input_schema_ref: "schema://nova/partner-outreach-drafts/thread-ref@0.1.0"
+          output_schema_ref: "schema://nova/partner-outreach-drafts/thread-state@0.1.0"
+          objects:
+            - {object_id: "nova.mail.thread", name: "Thread", description: "A provider conversation thread", operations: ["read"], scope_rules: ["sending mailbox only", "metadata only"], schema_ref: "schema://nova/partner-outreach-drafts/thread-state@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/partner-outreach-drafts/thread-ref@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/thread-state@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:thread:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: ["provider quota"], error_codes: ["thread_not_found", "provider_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["sent messages carry the SENT label"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.mail.body"
+      name: "Transient body read"
+      description: "Read one reply body in memory for classification and reply drafting; never persisted."
+      intent_examples: []
+      input_schema_ref: "schema://nova/partner-outreach-drafts/message-ref@0.1.0"
+      output_schema_ref: "schema://nova/partner-outreach-drafts/transient-body@0.1.0"
+      risk_class: "high"
+      preconditions: ["owner consent for transient body reads at activation"]
+      postconditions: ["body absent from store, logs and execution data"]
+      tools:
+        - tool_id: "nova.mail.body.fetch_transient"
+          name: "Fetch body transiently"
+          description: "Provider read of one message; persist=false; execution-data saving disabled."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/body-transient", operation: "fetch_transient"}
+          input_schema_ref: "schema://nova/partner-outreach-drafts/message-ref@0.1.0"
+          output_schema_ref: "schema://nova/partner-outreach-drafts/transient-body@0.1.0"
+          objects:
+            - {object_id: "nova.mail.body", name: "Transient body", description: "Reply text held in memory only", operations: ["read"], scope_rules: ["one message per call", "never persisted"], schema_ref: "schema://nova/partner-outreach-drafts/transient-body@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/partner-outreach-drafts/message-ref@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/transient-body@0.1.0", constraints: ["read-only provider scope"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:body:read_transient"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 2, rate_limits: ["provider quota"], error_codes: ["not_found", "auth_revoked", "provider_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["persist is false"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.outreach.reply"
+      name: "Reply classification"
+      description: "Classify replies so opt-outs are honoured and answers are drafted."
+      intent_examples: []
+      input_schema_ref: "schema://nova/partner-outreach-drafts/transient-body@0.1.0"
+      output_schema_ref: "schema://nova/partner-outreach-drafts/reply-class@0.1.0"
+      risk_class: "medium"
+      preconditions: ["reply item has thread ID and message ID"]
+      postconditions: ["opt_out and bounce produce suppression and no draft"]
+      tools:
+        - tool_id: "nova.outreach.reply.classify"
+          name: "Classify reply"
+          description: "Structured-output LLM: interested, question, not_interested, opt_out, auto_reply or bounce; a reply that both asks and says stop is opt_out."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/outreach/reply-classify", operation: "classify"}
+          input_schema_ref: "schema://nova/partner-outreach-drafts/transient-body@0.1.0"
+          output_schema_ref: "schema://nova/partner-outreach-drafts/reply-class@0.1.0"
+          objects:
+            - {object_id: "nova.outreach.reply_class", name: "Reply class", description: "Classification of one reply", operations: ["create"], scope_rules: ["in memory; recorded as a touch state only"], schema_ref: "schema://nova/partner-outreach-drafts/reply-class@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/partner-outreach-drafts/transient-body@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/reply-class@0.1.0", constraints: ["failure means skip, never draft by default"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["outreach:compose"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["reply text sent to the LLM provider"], idempotency: "not_applicable", timeout_seconds: 60, max_attempts: 2, rate_limits: [], error_codes: ["llm_error", "unparseable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["opt-out phrases classified opt_out"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.mail.draft"
+      name: "Mail drafts"
+      description: "Create drafts in the sending mailbox; the adapter exposes no send operation."
+      intent_examples: []
+      input_schema_ref: "schema://nova/partner-outreach-drafts/draft-request@0.1.0"
+      output_schema_ref: "schema://nova/partner-outreach-drafts/draft-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["draft-only adapter proven at preflight", "suppression re-checked within 5 minutes"]
+      postconditions: ["read-back shows DRAFT and not SENT"]
+      tools:
+        - tool_id: "nova.mail.draft.create"
+          name: "Create draft"
+          description: "New-thread draft for first touches; threaded-reply draft with thread ID, In-Reply-To and References for follow-ups and replies."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/draft-create", operation: "create"}
+          input_schema_ref: "schema://nova/partner-outreach-drafts/draft-request@0.1.0"
+          output_schema_ref: "schema://nova/partner-outreach-drafts/draft-result@0.1.0"
+          objects:
+            - {object_id: "nova.mail.provider_draft", name: "Provider draft", description: "A draft in the sending mailbox", operations: ["create"], scope_rules: ["single recipient equal to the contact", "approved attachment only"], schema_ref: "schema://nova/partner-outreach-drafts/draft-result@0.1.0"}
+          variants:
+            - {variant_id: "new-thread", description: "First-touch draft in a new thread", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/partner-outreach-drafts/draft-request@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/draft-result@0.1.0", constraints: ["never send"], fallback_variant_id: null}
+            - {variant_id: "threaded-reply", description: "Follow-up or reply draft in the existing thread", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/partner-outreach-drafts/draft-request@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/draft-result@0.1.0", constraints: ["never send", "never falls back to a new thread"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:draft:create"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["draft created in the owner's mailbox"], idempotency: "required", timeout_seconds: 20, max_attempts: 1, rate_limits: ["daily cap", "reply cap"], error_codes: ["invalid_recipient", "thread_not_found", "auth_revoked", "provider_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["labels include DRAFT and not SENT", "recipient equals the contact"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.outreach.log"
+      name: "Outreach records"
+      description: "Touch states and the hashed shingle corpus."
+      intent_examples: []
+      input_schema_ref: "schema://nova/partner-outreach-drafts/log-entry@0.1.0"
+      output_schema_ref: "schema://nova/partner-outreach-drafts/log-receipt@0.1.0"
+      risk_class: "low"
+      preconditions: []
+      postconditions: ["one entry per contact and step"]
+      tools:
+        - tool_id: "nova.outreach.log.record"
+          name: "Record touch"
+          description: "Record drafted, sent_observed, replied, skipped or failed; add hashed shingles to the corpus."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/outreach/log", operation: "record"}
+          input_schema_ref: "schema://nova/partner-outreach-drafts/log-entry@0.1.0"
+          output_schema_ref: "schema://nova/partner-outreach-drafts/log-receipt@0.1.0"
+          objects:
+            - {object_id: "nova.outreach.touch", name: "Touch", description: "One outreach event", operations: ["create", "update"], scope_rules: ["unique on contact and step", "conditional state transitions"], schema_ref: "schema://nova/partner-outreach-drafts/log-entry@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/partner-outreach-drafts/log-entry@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/log-receipt@0.1.0", constraints: ["disabled in dry_run"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["outreach:log:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["touch recorded"], idempotency: "required", timeout_seconds: 10, max_attempts: 4, rate_limits: [], error_codes: ["duplicate", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["budget count includes the new draft"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Morning digest of drafts waiting, replies, observed sends and suppressions."
+      intent_examples: []
+      input_schema_ref: "schema://nova/partner-outreach-drafts/digest-message@0.1.0"
+      output_schema_ref: "schema://nova/partner-outreach-drafts/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["reported items marked only after delivery"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send plain text to the owner with an idempotency key; quiet when nothing to report."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/partner-outreach-drafts/digest-message@0.1.0"
+          output_schema_ref: "schema://nova/partner-outreach-drafts/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "The outreach digest", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/partner-outreach-drafts/digest-message@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/partner-outreach-drafts/digest-message@0.1.0", output_schema_ref: "schema://nova/partner-outreach-drafts/delivery@0.1.0", constraints: ["owner only", "plain text"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: ["one digest per campaign per local date"], error_codes: ["channel_unavailable", "delivery_unknown"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

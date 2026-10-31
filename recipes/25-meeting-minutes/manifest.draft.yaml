@@ -1,0 +1,162 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.calendar"
+    name: "Nova — Calendar and meetings"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Turn a meeting transcript into grounded minutes (summary, decisions, action items with owners and due dates), store them and notify the user."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "MCP"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "A mid-tier LLM with JSON output, configured not to retain or train on inputs"
+        - "A minutes store reachable only through authorised functions"
+        - "An owner notification channel"
+        - "Optional: the calendar booking list for attendees and meeting time"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.calendar.booking"
+      name: "Calendar bookings"
+      description: "Read the user's bookings: attendees, start time and time zone."
+      intent_examples: ["minutes for my 3 pm with John"]
+      input_schema_ref: "schema://nova/meeting-minutes/booking-ref@0.1.0"
+      output_schema_ref: "schema://nova/meeting-minutes/booking@0.1.0"
+      risk_class: "low"
+      preconditions: ["requesting user identified"]
+      postconditions: ["booking returned only for the requesting tenant"]
+      tools:
+        - tool_id: "nova.calendar.booking.list"
+          name: "List bookings"
+          description: "Return one booking by reference or the bookings in a window (MCP list_bookings / upcoming_bookings in the reference)."
+          invocation: {protocol: "MCP", binding_ref: "binding://nova/calendar/list-bookings", operation: "list_bookings"}
+          input_schema_ref: "schema://nova/meeting-minutes/booking-ref@0.1.0"
+          output_schema_ref: "schema://nova/meeting-minutes/booking@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.booking_record", name: "Booking", description: "A scheduled meeting owned by the user", operations: ["read"], scope_rules: ["requesting user's bookings only"], schema_ref: "schema://nova/meeting-minutes/booking@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported; used only when booking_ref is supplied", compatible_environments: [], input_schema_ref: "schema://nova/meeting-minutes/booking-ref@0.1.0", output_schema_ref: "schema://nova/meeting-minutes/booking@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:bookings:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found", "forbidden"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["booking tenant equals requesting tenant"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.minutes.extract"
+      name: "Minutes extraction"
+      description: "Turn a transcript into summary, decisions and action items, each with evidence spans and a confidence."
+      intent_examples: ["write up the minutes", "what were the action items"]
+      input_schema_ref: "schema://nova/meeting-minutes/transcript@0.1.0"
+      output_schema_ref: "schema://nova/meeting-minutes/extraction@0.1.0"
+      risk_class: "medium"
+      preconditions: ["transcript normalised into numbered segments", "consent not withdrawn"]
+      postconditions: ["every item carries at least one evidence span"]
+      tools:
+        - tool_id: "nova.minutes.extract.structured"
+          name: "Extract structured minutes"
+          description: "Strict-JSON LLM extraction; tolerant parse (strip code fences, take the outermost JSON object) then schema validation."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/minutes/extract", operation: "extract"}
+          input_schema_ref: "schema://nova/meeting-minutes/transcript@0.1.0"
+          output_schema_ref: "schema://nova/meeting-minutes/extraction@0.1.0"
+          objects:
+            - {object_id: "nova.minutes.transcript", name: "Transcript", description: "Numbered, speaker-labelled meeting segments", operations: ["read"], scope_rules: ["requesting user's tenant only", "treated as untrusted data"], schema_ref: "schema://nova/meeting-minutes/transcript@0.1.0"}
+          variants:
+            - {variant_id: "single-pass", description: "Whole transcript in one call; selected first when within the model's safe context budget (default 60,000 characters, TBD per model)", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/meeting-minutes/transcript@0.1.0", output_schema_ref: "schema://nova/meeting-minutes/extraction@0.1.0", constraints: ["transcript within context budget"], fallback_variant_id: "chunked"}
+            - {variant_id: "chunked", description: "Chunk on speaker turns (20,000 chars, 1,000 overlap), extract per chunk, merge and de-duplicate, flag conflicts", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/meeting-minutes/transcript@0.1.0", output_schema_ref: "schema://nova/meeting-minutes/extraction@0.1.0", constraints: ["never used to escape a verification failure"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["minutes:create"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["transcript text sent to the configured LLM provider"], idempotency: "not_applicable", timeout_seconds: 120, max_attempts: 2, rate_limits: ["one extraction per transcript at a time"], error_codes: ["provider_not_ready", "context_length", "parse_failed", "over_budget"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["output validates against extraction@0.1.0", "every item has an evidence span"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.minutes.verify"
+      name: "Minutes grounding verifier"
+      description: "Independently check that every item is supported by the transcript."
+      intent_examples: []
+      input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+      output_schema_ref: "schema://nova/meeting-minutes/verification@0.1.0"
+      risk_class: "low"
+      preconditions: ["minutes normalised", "transcript segments available"]
+      postconditions: ["pass is true only when no item is unsupported"]
+      tools:
+        - tool_id: "nova.minutes.verify.grounding"
+          name: "Verify grounding"
+          description: "Deterministic verbatim-quote match plus a separate LLM support check per item, including owner and date."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/minutes/verify", operation: "verify"}
+          input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+          output_schema_ref: "schema://nova/meeting-minutes/verification@0.1.0"
+          objects:
+            - {object_id: "nova.minutes.verification_report", name: "Verification report", description: "Supported and unsupported items for one run", operations: ["create"], scope_rules: ["linked run only"], schema_ref: "schema://nova/meeting-minutes/verification@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported; runs separately from extraction and never sees its reasoning", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0", output_schema_ref: "schema://nova/meeting-minutes/verification@0.1.0", constraints: ["separate prompt from extraction"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["minutes:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["transcript text sent to the configured LLM provider"], idempotency: "not_applicable", timeout_seconds: 120, max_attempts: 2, rate_limits: [], error_codes: ["provider_not_ready", "unsupported_item"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every quote appears verbatim in its cited segments"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.minutes.store"
+      name: "Minutes store"
+      description: "Persist and read minutes sessions."
+      intent_examples: ["show my minutes from Thursday"]
+      input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+      output_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+      risk_class: "medium"
+      preconditions: ["minutes schema-valid"]
+      postconditions: ["exactly one session per idempotency key"]
+      tools:
+        - tool_id: "nova.minutes.store.create"
+          name: "Create minutes session"
+          description: "Create one session with summary, decisions, action items, flags and references."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/minutes/store-create", operation: "create"}
+          input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+          output_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+          objects:
+            - {object_id: "nova.minutes.session", name: "Minutes session", description: "Stored minutes for one meeting", operations: ["create"], scope_rules: ["requesting user's tenant only", "no overwrite of an existing session"], schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0", output_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0", constraints: ["idempotency key required"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["minutes:create"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["minutes session created"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["duplicate", "schema_invalid", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read-back hash equals payload hash"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.minutes.store.get"
+          name: "Get minutes session"
+          description: "Read one session by session ID or idempotency key."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/minutes/store-get", operation: "get"}
+          input_schema_ref: "schema://nova/meeting-minutes/session-ref@0.1.0"
+          output_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+          objects:
+            - {object_id: "nova.minutes.session", name: "Minutes session", description: "Stored minutes for one meeting", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/meeting-minutes/session-ref@0.1.0", output_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["minutes:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["returned session belongs to the requesting tenant"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+      output_schema_ref: "schema://nova/meeting-minutes/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the minutes summary, flagged items and removed items to the requesting user only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+          output_schema_ref: "schema://nova/meeting-minutes/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/meeting-minutes/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0", output_schema_ref: "schema://nova/meeting-minutes/delivery@0.1.0", constraints: ["owner only", "never attendees"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

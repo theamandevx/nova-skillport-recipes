@@ -1,0 +1,292 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.content"
+    name: "Nova — Content studio"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Generate a voiceover from an approved script with a chosen voice; readiness and quota checked first; characters and cost recorded once; consent required for any cloned voice."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "OpenAPI"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Text-to-speech provider with voice catalogue, quota endpoint and generation history"
+        - "Durable object storage bucket for audio"
+        - "Content database whose audio-record function also writes the usage row"
+        - "Consent store written only by the voice owner's verified consent flow (cloning only)"
+        - "Owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.content.scripts"
+      name: "Scripts"
+      description: "Read a script and its approval state."
+      intent_examples: ["voice the script for post 42"]
+      input_schema_ref: "schema://nova/voiceover/request@0.1.0"
+      output_schema_ref: "schema://nova/voiceover/script@0.1.0"
+      risk_class: "low"
+      preconditions: ["requesting user identified"]
+      postconditions: ["approved script text and hash returned"]
+      tools:
+        - tool_id: "nova.content.scripts.get"
+          name: "Get script"
+          description: "Return script text, status, hash and owner."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/scripts", operation: "get"}
+          input_schema_ref: "schema://nova/voiceover/request@0.1.0"
+          output_schema_ref: "schema://nova/voiceover/script@0.1.0"
+          objects:
+            - {object_id: "nova.content.script", name: "Script", description: "Text to be spoken", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/voiceover/script@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/voiceover/request@0.1.0", output_schema_ref: "schema://nova/voiceover/script@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:scripts:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found", "not_approved"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["owner equals requester"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.voice.library"
+      name: "Voice library"
+      description: "Voices available to the user, including consent-gated cloned voices."
+      intent_examples: ["use the calm narrator voice"]
+      input_schema_ref: "schema://nova/voiceover/request@0.1.0"
+      output_schema_ref: "schema://nova/voiceover/voice@0.1.0"
+      risk_class: "high"
+      preconditions: ["provider ready"]
+      postconditions: ["selected voice active; cloned voices carry a valid consent_ref"]
+      tools:
+        - tool_id: "nova.voice.library.list_voices"
+          name: "List voices"
+          description: "Return voices with language, category and consent reference; readiness reason per provider."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/voice/voices", operation: "list_voices"}
+          input_schema_ref: "schema://nova/voiceover/request@0.1.0"
+          output_schema_ref: "schema://nova/voiceover/voice@0.1.0"
+          objects:
+            - {object_id: "nova.voice.voice", name: "Voice", description: "A stock or cloned TTS voice", operations: ["read"], scope_rules: ["stock catalogue plus the user's own cloned voices"], schema_ref: "schema://nova/voiceover/voice@0.1.0"}
+          variants:
+            - {variant_id: "live", description: "Provider's live voice listing (read-only); tried first", compatible_environments: [], input_schema_ref: "schema://nova/voiceover/request@0.1.0", output_schema_ref: "schema://nova/voiceover/voice@0.1.0", constraints: ["read-only"], fallback_variant_id: "allowlist"}
+            - {variant_id: "allowlist", description: "Operator-configured voice catalogue (read-only); only when live reports missing_permission or provider_unavailable; disclosed", compatible_environments: [], input_schema_ref: "schema://nova/voiceover/request@0.1.0", output_schema_ref: "schema://nova/voiceover/voice@0.1.0", constraints: ["read-only", "stock voices only; cloned voices never resolved from the allowlist"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["voice:library:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["missing_permission", "provider_unavailable", "not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every voice carries category and status"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.voice.library.clone_voice"
+          name: "Clone voice"
+          description: "Create a cloned voice from the owner's samples; requires a valid owner-granted consent record and an explicit approval."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/voice/clone", operation: "clone_voice"}
+          input_schema_ref: "schema://nova/voiceover/request@0.1.0"
+          output_schema_ref: "schema://nova/voiceover/voice@0.1.0"
+          objects:
+            - {object_id: "nova.voice.voice", name: "Voice", description: "A cloned voice linked to a consent record", operations: ["create"], scope_rules: ["user's tenant only", "consent scope.cloning must be true"], schema_ref: "schema://nova/voiceover/voice@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/voiceover/request@0.1.0", output_schema_ref: "schema://nova/voiceover/voice@0.1.0", constraints: ["valid consent", "explicit approval", "no public, scraped or third-party audio"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["voice:clone:create", "consent:voice:read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["voice samples sent to the provider", "cloned voice created"], idempotency: "required", timeout_seconds: 600, max_attempts: 1, rate_limits: [], error_codes: ["consent_invalid", "provider_rejected"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["voice listed as cloned with consent_ref"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.voice.library.set_voice_status"
+          name: "Disable cloned voice"
+          description: "Disable a cloned voice whose consent is revoked or expired."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/voice/voice-status", operation: "set_voice_status"}
+          input_schema_ref: "schema://nova/voiceover/voice@0.1.0"
+          output_schema_ref: "schema://nova/voiceover/voice@0.1.0"
+          objects:
+            - {object_id: "nova.voice.voice", name: "Voice", description: "A cloned voice", operations: ["update"], scope_rules: ["status to disabled only; never re-enable"], schema_ref: "schema://nova/voiceover/voice@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/voiceover/voice@0.1.0", output_schema_ref: "schema://nova/voiceover/voice@0.1.0", constraints: ["protective update only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["voice:library:update"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["voice no longer selectable"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["voice status equals disabled"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.consent.voice"
+      name: "Voice consent records"
+      description: "Read consent records for cloned voices; records are written only by the owner's verified consent flow."
+      intent_examples: []
+      input_schema_ref: "schema://nova/voiceover/request@0.1.0"
+      output_schema_ref: "schema://nova/voiceover/consent@0.1.0"
+      risk_class: "high"
+      preconditions: ["consent_ref supplied"]
+      postconditions: ["validity decision with reason"]
+      tools:
+        - tool_id: "nova.consent.voice.get"
+          name: "Get voice consent"
+          description: "Return owner, identity verification, scope, purposes, expiry and revocation."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/consent/voice", operation: "get"}
+          input_schema_ref: "schema://nova/voiceover/request@0.1.0"
+          output_schema_ref: "schema://nova/voiceover/consent@0.1.0"
+          objects:
+            - {object_id: "nova.consent.voice_consent", name: "Consent record", description: "A voice owner's consent to cloning and use", operations: ["read"], scope_rules: ["referenced record only", "agent never creates or edits consent"], schema_ref: "schema://nova/voiceover/consent@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/voiceover/request@0.1.0", output_schema_ref: "schema://nova/voiceover/consent@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["consent:voice:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found", "revoked", "expired", "purpose_not_covered"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["granted_by_owner true", "purpose covered", "not revoked or expired"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.voice.account"
+      name: "TTS account readiness and quota"
+      description: "Provider readiness with a named reason and character quota."
+      intent_examples: ["how many characters are left"]
+      input_schema_ref: "schema://nova/voiceover/request@0.1.0"
+      output_schema_ref: "schema://nova/voiceover/quota@0.1.0"
+      risk_class: "low"
+      preconditions: []
+      postconditions: ["ready flag and reason returned"]
+      tools:
+        - tool_id: "nova.voice.account.get_quota"
+          name: "Get quota"
+          description: "Return ready, reason, characters used, limit and reset time."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/voice/quota", operation: "get_quota"}
+          input_schema_ref: "schema://nova/voiceover/request@0.1.0"
+          output_schema_ref: "schema://nova/voiceover/quota@0.1.0"
+          objects:
+            - {object_id: "nova.voice.quota", name: "Quota snapshot", description: "Character quota for the TTS account", operations: ["read"], scope_rules: ["tenant's provider account only"], schema_ref: "schema://nova/voiceover/quota@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/voiceover/request@0.1.0", output_schema_ref: "schema://nova/voiceover/quota@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["voice:account:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["missing_permission", "invalid_credential", "payment_required", "quota_exhausted", "provider_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["remaining characters at least the characters needed"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.voice.tts"
+      name: "Text to speech"
+      description: "Generate speech audio from an approved script with a chosen voice."
+      intent_examples: ["make a voiceover of this script"]
+      input_schema_ref: "schema://nova/voiceover/request@0.1.0"
+      output_schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["script approved", "voice valid", "quota sufficient", "estimate within cap"]
+      postconditions: ["audio decodes", "speaking rate plausible"]
+      tools:
+        - tool_id: "nova.voice.tts.synthesize"
+          name: "Synthesize"
+          description: "Generate one audio file from the script; model and format are explicit parameters, never silently substituted."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/voice/tts", operation: "synthesize"}
+          input_schema_ref: "schema://nova/voiceover/request@0.1.0"
+          output_schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0"
+          objects:
+            - {object_id: "nova.content.audio_asset", name: "Audio asset", description: "Generated speech audio", operations: ["create"], scope_rules: ["user's tenant only"], schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Provider multilingual model, MP3 44.1 kHz 128 kbps by default; only the default variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/voiceover/request@0.1.0", output_schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0", constraints: ["script spoken word for word", "consent checked for cloned voices"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["voice:tts:create"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["characters consumed", "provider charges"], idempotency: "required", timeout_seconds: 120, max_attempts: 2, rate_limits: ["1 synthesis in flight per user"], error_codes: ["quota_exhausted", "payment_required", "invalid_voice", "timeout"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["audio decodes", "rate 6-30 characters per second", "not silent"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.voice.history"
+      name: "Generation history"
+      description: "Find past generations to avoid paying twice for the same audio."
+      intent_examples: []
+      input_schema_ref: "schema://nova/voiceover/request@0.1.0"
+      output_schema_ref: "schema://nova/voiceover/audio-record@0.1.0"
+      risk_class: "low"
+      preconditions: []
+      postconditions: ["match or no match by request hash"]
+      tools:
+        - tool_id: "nova.voice.history.find"
+          name: "Find past generation"
+          description: "Look up a generation by request hash."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/voice/history", operation: "find"}
+          input_schema_ref: "schema://nova/voiceover/request@0.1.0"
+          output_schema_ref: "schema://nova/voiceover/audio-record@0.1.0"
+          objects:
+            - {object_id: "nova.content.audio_record", name: "Audio record", description: "A past generation", operations: ["read"], scope_rules: ["user's tenant only"], schema_ref: "schema://nova/voiceover/audio-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/voiceover/request@0.1.0", output_schema_ref: "schema://nova/voiceover/audio-record@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["voice:history:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["hash equality for matches"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.content.audio"
+      name: "Audio storage and records"
+      description: "Store the audio file and insert the audio record and its usage row in one transaction."
+      intent_examples: []
+      input_schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0"
+      output_schema_ref: "schema://nova/voiceover/audio-record@0.1.0"
+      risk_class: "low"
+      preconditions: ["audio validated"]
+      postconditions: ["exactly one audio record and one usage row"]
+      tools:
+        - tool_id: "nova.content.assets.upload"
+          name: "Upload audio"
+          description: "Write the audio to the audio bucket under a content-hash path."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/assets", operation: "upload"}
+          input_schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0"
+          output_schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0"
+          objects:
+            - {object_id: "nova.content.audio_asset", name: "Audio asset", description: "Stored audio object", operations: ["create"], scope_rules: ["user's audio bucket only", "no delete"], schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0", output_schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0", constraints: ["content-hash path"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:assets:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["object created in the audio bucket"], idempotency: "required", timeout_seconds: 30, max_attempts: 3, rate_limits: [], error_codes: ["storage_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read-back hash equals content_hash"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.content.audio_records.add"
+          name: "Add audio record"
+          description: "Insert the audio record and its usage row (meta.job content:voiceover, units.characters) in one database transaction so every caller is counted once."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/content/audio-records", operation: "add"}
+          input_schema_ref: "schema://nova/voiceover/audio-record@0.1.0"
+          output_schema_ref: "schema://nova/voiceover/audio-record@0.1.0"
+          objects:
+            - {object_id: "nova.content.audio_record", name: "Audio record", description: "One generated voiceover", operations: ["create"], scope_rules: ["user's tenant only"], schema_ref: "schema://nova/voiceover/audio-record@0.1.0"}
+            - {object_id: "nova.usage.record", name: "Usage row", description: "Characters and cost for one generation", operations: ["create"], scope_rules: ["append-only", "written only inside this transaction"], schema_ref: "schema://nova/voiceover/usage-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/voiceover/audio-record@0.1.0", output_schema_ref: "schema://nova/voiceover/audio-record@0.1.0", constraints: ["unique tenant_id + request hash + run_id"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["content:audio:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["audio record and usage row inserted"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["duplicate_key"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["one usage row per audio record", "units.characters equals characters"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.speech.verify"
+      name: "Transcribe-back verifier"
+      description: "Independent check: transcribe the audio and compare with the script."
+      intent_examples: []
+      input_schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0"
+      output_schema_ref: "schema://nova/voiceover/fidelity@0.1.0"
+      risk_class: "low"
+      preconditions: ["audio stored"]
+      postconditions: ["word error rate recorded"]
+      tools:
+        - tool_id: "nova.speech.transcribe"
+          name: "Transcribe audio"
+          description: "Speech-to-text independent of the TTS provider; returns transcript and WER against the script."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/speech/transcribe", operation: "transcribe"}
+          input_schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0"
+          output_schema_ref: "schema://nova/voiceover/fidelity@0.1.0"
+          objects:
+            - {object_id: "nova.content.audio_asset", name: "Audio asset", description: "Stored audio object", operations: ["read"], scope_rules: ["user's tenant only"], schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0", output_schema_ref: "schema://nova/voiceover/fidelity@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["speech:transcribe"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 60, max_attempts: 2, rate_limits: [], error_codes: ["unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["WER at or below threshold"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0"
+      output_schema_ref: "schema://nova/voiceover/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the voiceover result to the requesting user only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0"
+          output_schema_ref: "schema://nova/voiceover/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/voiceover/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/voiceover/voiceover-result@0.1.0", output_schema_ref: "schema://nova/voiceover/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

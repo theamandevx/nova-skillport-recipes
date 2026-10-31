@@ -1,0 +1,136 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.memory"
+    name: "Nova — Memory and notes"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Recall what the user saved or said before, with dates and sources, and say plainly when nothing is found."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Per-user persistent memory store (read)"
+        - "Per-user session store with full-text search (optional; recipe degrades to memory only)"
+        - "LLM for query expansion, composition and verification"
+        - "Owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.memory.store"
+      name: "Persistent memory"
+      description: "The user's small, character-limited memory with user-profile and agent-notes targets."
+      intent_examples: ["what do you know about me", "what's my preferred meeting time"]
+      input_schema_ref: "schema://nova/find-a-saved-memory/memory-target@0.1.0"
+      output_schema_ref: "schema://nova/find-a-saved-memory/memory-entry@0.1.0"
+      risk_class: "medium"
+      preconditions: ["store bound to the requesting user"]
+      postconditions: ["only own entries returned"]
+      tools:
+        - tool_id: "nova.memory.store.read"
+          name: "Read memory"
+          description: "Return entries from both targets for local keyword matching."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/memory/read", operation: "read"}
+          input_schema_ref: "schema://nova/find-a-saved-memory/memory-target@0.1.0"
+          output_schema_ref: "schema://nova/find-a-saved-memory/memory-entry@0.1.0"
+          objects:
+            - {object_id: "nova.memory.entry", name: "Memory entry", description: "One short fact or instruction, dated when saved with the dated prefix", operations: ["read"], scope_rules: ["requesting user's memory only"], schema_ref: "schema://nova/find-a-saved-memory/memory-entry@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Reads both targets; searched first", compatible_environments: [], input_schema_ref: "schema://nova/find-a-saved-memory/memory-target@0.1.0", output_schema_ref: "schema://nova/find-a-saved-memory/memory-entry@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["memory:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["only own entries returned", "date_known true only when parsed from the entry"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.memory.session"
+      name: "Session store"
+      description: "The user's past conversation transcripts with full-text search."
+      intent_examples: ["what did I say last week about the trip"]
+      input_schema_ref: "schema://nova/find-a-saved-memory/session-query@0.1.0"
+      output_schema_ref: "schema://nova/find-a-saved-memory/session-hit@0.1.0"
+      risk_class: "medium"
+      preconditions: ["store bound to the requesting user"]
+      postconditions: ["hits carry session ID, time and channel", "current session excluded"]
+      tools:
+        - tool_id: "nova.memory.session.search"
+          name: "Search sessions"
+          description: "Keyword full-text search over past sessions; at most 3 queries per run."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/memory/session-search", operation: "search"}
+          input_schema_ref: "schema://nova/find-a-saved-memory/session-query@0.1.0"
+          output_schema_ref: "schema://nova/find-a-saved-memory/session-hit@0.1.0"
+          objects:
+            - {object_id: "nova.memory.session_hit", name: "Session hit", description: "A snippet from one past conversation with its time and channel", operations: ["read"], scope_rules: ["requesting user's sessions only", "snippet text is untrusted data"], schema_ref: "schema://nova/find-a-saved-memory/session-hit@0.1.0"}
+          variants:
+            - {variant_id: "full-text", description: "Keyword full-text search; the only search variant built (no semantic variant)", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/find-a-saved-memory/session-query@0.1.0", output_schema_ref: "schema://nova/find-a-saved-memory/session-hit@0.1.0", constraints: ["read-only", "max 3 queries per run"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["sessions:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: ["3 queries per run"], error_codes: ["store_unavailable", "not_installed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no other user's sessions returned", "current session excluded"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.memory.recall"
+      name: "Recall answer"
+      description: "Compose an answer that contains nothing beyond the matches, then verify it independently."
+      intent_examples: []
+      input_schema_ref: "schema://nova/find-a-saved-memory/recall-match@0.1.0"
+      output_schema_ref: "schema://nova/find-a-saved-memory/recall-result@0.1.0"
+      risk_class: "low"
+      preconditions: ["matches collected, or found = false"]
+      postconditions: ["every answer sentence maps to a match or a fixed not-found template"]
+      tools:
+        - tool_id: "nova.memory.recall.compose"
+          name: "Compose answer"
+          description: "Rank, deduplicate, pair conflicts and write one sentence per match with date and source."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/memory/recall-compose", operation: "compose"}
+          input_schema_ref: "schema://nova/find-a-saved-memory/recall-match@0.1.0"
+          output_schema_ref: "schema://nova/find-a-saved-memory/recall-result@0.1.0"
+          objects:
+            - {object_id: "nova.memory.recall_match", name: "Recall match", description: "One matched memory or session snippet in this run", operations: ["create", "read"], scope_rules: ["this run only"], schema_ref: "schema://nova/find-a-saved-memory/recall-match@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/find-a-saved-memory/recall-match@0.1.0", output_schema_ref: "schema://nova/find-a-saved-memory/recall-result@0.1.0", constraints: ["no content beyond matches", "no unrecorded dates"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["memory:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: [], error_codes: ["composition_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["schema valid"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.memory.recall.verify"
+          name: "Verify answer"
+          description: "Rule check plus a separate LLM pass mapping every sentence and date to a match; can only remove content."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/memory/recall-verify", operation: "verify"}
+          input_schema_ref: "schema://nova/find-a-saved-memory/recall-result@0.1.0"
+          output_schema_ref: "schema://nova/find-a-saved-memory/recall-verdict@0.1.0"
+          objects:
+            - {object_id: "nova.memory.recall_match", name: "Recall match", description: "One matched memory or session snippet in this run", operations: ["read"], scope_rules: ["this run only"], schema_ref: "schema://nova/find-a-saved-memory/recall-match@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/find-a-saved-memory/recall-result@0.1.0", output_schema_ref: "schema://nova/find-a-saved-memory/recall-verdict@0.1.0", constraints: ["can remove, never add"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["memory:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: [], error_codes: ["unmapped_statement", "unrecorded_date"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["100% of sentences mapped", "no unrecorded dates"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/find-a-saved-memory/recall-result@0.1.0"
+      output_schema_ref: "schema://nova/find-a-saved-memory/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured", "channel is private"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the verified answer to the requesting user in a private channel only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/find-a-saved-memory/recall-result@0.1.0"
+          output_schema_ref: "schema://nova/find-a-saved-memory/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner private channel only"], schema_ref: "schema://nova/find-a-saved-memory/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/find-a-saved-memory/recall-result@0.1.0", output_schema_ref: "schema://nova/find-a-saved-memory/delivery@0.1.0", constraints: ["owner only", "private channel only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable", "channel_not_private"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

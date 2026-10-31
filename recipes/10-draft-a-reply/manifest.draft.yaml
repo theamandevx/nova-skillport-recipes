@@ -1,0 +1,180 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.inbox"
+    name: "Nova — Inbox intelligence"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Threaded reply drafts in the business mailbox for triaged needs-reply email; never sends; one bad item cannot block the queue."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Inbox-triage recipe running on the business mailbox"
+        - "Draft-create grant on the business mailbox with an adapter that blocks send"
+        - "Structured-output LLM provider"
+        - "Owner signature and own-domain list configured"
+        - "Owner notification channel"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.mail.reply"
+      name: "Reply drafting"
+      description: "Queue, compose, save and record threaded reply drafts in the business mailbox."
+      intent_examples: ["draft a reply to Jane's email", "prepare replies for my inbox"]
+      input_schema_ref: "schema://nova/draft-a-reply/reply-config@0.1.0"
+      output_schema_ref: "schema://nova/draft-a-reply/run-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["mailbox kind is business", "adapter operation set excludes send"]
+      postconditions: ["every selected item drafted, skipped, in backoff or parked", "nothing sent"]
+      tools:
+        - tool_id: "nova.mail.reply.due"
+          name: "Due reply queue"
+          description: "Needs-reply, triaged, undrafted business email from well-formed external senders; excludes lists, calendar notifications, skipped, parked and backoff items."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/reply-due", operation: "due"}
+          input_schema_ref: "schema://nova/draft-a-reply/reply-config@0.1.0"
+          output_schema_ref: "schema://nova/draft-a-reply/reply-candidate@0.1.0"
+          objects:
+            - {object_id: "nova.mail.reply_candidate", name: "Reply candidate", description: "View over triaged message copies in the business mailbox", operations: ["read"], scope_rules: ["business mailbox only", "well-formed sender only"], schema_ref: "schema://nova/draft-a-reply/reply-candidate@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/draft-a-reply/reply-config@0.1.0", output_schema_ref: "schema://nova/draft-a-reply/reply-candidate@0.1.0", constraints: ["read-only", "oldest first", "backoff respected"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:reply:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every candidate passes the well-formed sender rule", "no candidate in backoff"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.mail.reply.compose"
+          name: "Compose reply"
+          description: "Produce short reply text from the stored triage suggestion or from a fresh transient read; email text is untrusted data."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/reply-compose", operation: "compose"}
+          input_schema_ref: "schema://nova/draft-a-reply/reply-candidate@0.1.0"
+          output_schema_ref: "schema://nova/draft-a-reply/reply-text@0.1.0"
+          objects:
+            - {object_id: "nova.mail.reply_text", name: "Reply text", description: "Proposed reply body", operations: ["create"], scope_rules: ["in memory until saved as a draft"], schema_ref: "schema://nova/draft-a-reply/reply-text@0.1.0"}
+          variants:
+            - {variant_id: "from-triage", description: "Reuse the stored triage suggestion when present and triaged in the last 7 days; no new body read; selected first", compatible_environments: [], input_schema_ref: "schema://nova/draft-a-reply/reply-candidate@0.1.0", output_schema_ref: "schema://nova/draft-a-reply/reply-text@0.1.0", constraints: ["must pass the same content verification"], fallback_variant_id: "fresh"}
+            - {variant_id: "fresh", description: "Transient body read plus structured-output LLM drafting", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/draft-a-reply/reply-candidate@0.1.0", output_schema_ref: "schema://nova/draft-a-reply/reply-text@0.1.0", constraints: ["body never persisted", "no commitments"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:reply:read", "mail:body:read_transient"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["email content sent to the LLM provider"], idempotency: "not_applicable", timeout_seconds: 90, max_attempts: 2, rate_limits: ["token cap per run TBD"], error_codes: ["llm_error", "timeout", "verification_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no prices, dates, deadlines, terms or attachment claims", "length at most 1200 characters"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.mail.reply.create_draft"
+          name: "Create threaded draft"
+          description: "Save a draft in the original thread with In-Reply-To and References; the adapter exposes draft create, get and list only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/reply-create-draft", operation: "create_draft"}
+          input_schema_ref: "schema://nova/draft-a-reply/draft-request@0.1.0"
+          output_schema_ref: "schema://nova/draft-a-reply/draft-result@0.1.0"
+          objects:
+            - {object_id: "nova.mail.provider_draft", name: "Provider draft", description: "A draft in the business mailbox", operations: ["create"], scope_rules: ["business mailbox only", "existing thread only", "single recipient equal to the validated sender"], schema_ref: "schema://nova/draft-a-reply/draft-result@0.1.0"}
+          variants:
+            - {variant_id: "threaded", description: "Draft with thread ID, In-Reply-To and References; only this variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/draft-a-reply/draft-request@0.1.0", output_schema_ref: "schema://nova/draft-a-reply/draft-result@0.1.0", constraints: ["never send", "no non-threaded fallback", "no CC or BCC"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:draft:create"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["draft created in the owner's mailbox"], idempotency: "required", timeout_seconds: 20, max_attempts: 1, rate_limits: ["batch_size drafts per run"], error_codes: ["invalid_recipient", "thread_not_found", "auth_revoked", "provider_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read-back thread ID matches", "labels include DRAFT and not SENT"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.mail.reply.find_draft"
+          name: "Find draft"
+          description: "Read a draft by ID, or find a draft in a thread replying to a given Message-ID created after a given time."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/reply-find-draft", operation: "find_draft"}
+          input_schema_ref: "schema://nova/draft-a-reply/thread-ref@0.1.0"
+          output_schema_ref: "schema://nova/draft-a-reply/draft-result@0.1.0"
+          objects:
+            - {object_id: "nova.mail.provider_draft", name: "Provider draft", description: "A draft in the business mailbox", operations: ["read"], scope_rules: ["business mailbox only"], schema_ref: "schema://nova/draft-a-reply/draft-result@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/draft-a-reply/thread-ref@0.1.0", output_schema_ref: "schema://nova/draft-a-reply/draft-result@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:thread:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["at most one match adopted"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.mail.reply.record"
+          name: "Record outcome"
+          description: "Record drafted, skipped (with reason) or failed (attempts, backoff, park at the limit) so the queue always moves."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/reply-record", operation: "record"}
+          input_schema_ref: "schema://nova/draft-a-reply/record-request@0.1.0"
+          output_schema_ref: "schema://nova/draft-a-reply/record-result@0.1.0"
+          objects:
+            - {object_id: "nova.mail.reply_candidate", name: "Reply candidate", description: "Reply-draft fields on message copies", operations: ["update"], scope_rules: ["reply-draft fields only"], schema_ref: "schema://nova/draft-a-reply/record-request@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/draft-a-reply/record-request@0.1.0", output_schema_ref: "schema://nova/draft-a-reply/record-result@0.1.0", constraints: ["one increment per run"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:reply:record"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["reply-draft state updated"], idempotency: "required", timeout_seconds: 10, max_attempts: 4, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["item no longer due before next_attempt_at"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.mail.thread"
+      name: "Thread metadata"
+      description: "Read the messages of one thread as metadata (senders, labels, dates, Message-IDs); no bodies."
+      intent_examples: []
+      input_schema_ref: "schema://nova/draft-a-reply/thread-ref@0.1.0"
+      output_schema_ref: "schema://nova/draft-a-reply/thread-metadata@0.1.0"
+      risk_class: "low"
+      preconditions: ["mailbox connected"]
+      postconditions: ["original Message-ID present in the thread"]
+      tools:
+        - tool_id: "nova.mail.thread.get_metadata"
+          name: "Get thread metadata"
+          description: "Return the thread's messages with sender, labels, In-Reply-To and date."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/thread-metadata", operation: "get_metadata"}
+          input_schema_ref: "schema://nova/draft-a-reply/thread-ref@0.1.0"
+          output_schema_ref: "schema://nova/draft-a-reply/thread-metadata@0.1.0"
+          objects:
+            - {object_id: "nova.mail.thread", name: "Thread", description: "A provider conversation thread", operations: ["read"], scope_rules: ["business mailbox only", "metadata only"], schema_ref: "schema://nova/draft-a-reply/thread-metadata@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/draft-a-reply/thread-ref@0.1.0", output_schema_ref: "schema://nova/draft-a-reply/thread-metadata@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:thread:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 3, rate_limits: ["provider quota"], error_codes: ["thread_not_found", "provider_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["original Message-ID present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.mail.body"
+      name: "Transient body read"
+      description: "Fetch one message body for in-memory use during one composition; never persisted."
+      intent_examples: []
+      input_schema_ref: "schema://nova/draft-a-reply/message-ref@0.1.0"
+      output_schema_ref: "schema://nova/draft-a-reply/transient-body@0.1.0"
+      risk_class: "high"
+      preconditions: ["owner consent for transient body reads at installation"]
+      postconditions: ["body absent from store, logs and execution data"]
+      tools:
+        - tool_id: "nova.mail.body.fetch_transient"
+          name: "Fetch body transiently"
+          description: "Read one message at the provider; persist=false; execution-data saving disabled."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/body-transient", operation: "fetch_transient"}
+          input_schema_ref: "schema://nova/draft-a-reply/message-ref@0.1.0"
+          output_schema_ref: "schema://nova/draft-a-reply/transient-body@0.1.0"
+          objects:
+            - {object_id: "nova.mail.body", name: "Transient body", description: "Message text held in memory only", operations: ["read"], scope_rules: ["one message per call", "never persisted"], schema_ref: "schema://nova/draft-a-reply/transient-body@0.1.0"}
+          variants:
+            - {variant_id: "provider", description: "Provider read of one message; only the default variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/draft-a-reply/message-ref@0.1.0", output_schema_ref: "schema://nova/draft-a-reply/transient-body@0.1.0", constraints: ["read-only provider scope"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:body:read_transient"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 3, rate_limits: ["provider quota"], error_codes: ["not_found", "auth_revoked", "provider_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["persist is false"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Tell the owner which reply drafts are ready and which items were parked."
+      intent_examples: []
+      input_schema_ref: "schema://nova/draft-a-reply/owner-summary@0.1.0"
+      output_schema_ref: "schema://nova/draft-a-reply/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send one plain-text summary to the owner only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/draft-a-reply/owner-summary@0.1.0"
+          output_schema_ref: "schema://nova/draft-a-reply/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the owner", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/draft-a-reply/owner-summary@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/draft-a-reply/owner-summary@0.1.0", output_schema_ref: "schema://nova/draft-a-reply/delivery@0.1.0", constraints: ["owner only", "plain text"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

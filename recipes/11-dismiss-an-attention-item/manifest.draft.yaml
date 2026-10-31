@@ -1,0 +1,114 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.inbox"
+    name: "Nova — Inbox intelligence"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Reversible soft dismiss of attention items: removes an email from the attention list and the digest while keeping its triage record."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Triage results from the inbox-triage recipe"
+        - "Owner interface (dashboard or chat) with authenticated owner sessions"
+        - "Activity (audit) log"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.mail.attention"
+      name: "Attention list"
+      description: "The owner's attention list over triaged email, with a reversible soft dismiss flag."
+      intent_examples: ["dismiss this", "hide the newsletter items from this week", "bring back Jane's email"]
+      input_schema_ref: "schema://nova/dismiss-an-attention-item/dismiss-request@0.1.0"
+      output_schema_ref: "schema://nova/dismiss-an-attention-item/dismiss-result@0.1.0"
+      risk_class: "low"
+      preconditions: ["actor is the tenant owner"]
+      postconditions: ["only the dismiss fields changed", "triage record unchanged"]
+      tools:
+        - tool_id: "nova.mail.attention.resolve"
+          name: "Resolve items"
+          description: "Turn item IDs or a selector into Message-ID groups with current dismiss state and a triage hash."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/attention-resolve", operation: "resolve"}
+          input_schema_ref: "schema://nova/dismiss-an-attention-item/dismiss-request@0.1.0"
+          output_schema_ref: "schema://nova/dismiss-an-attention-item/resolved-items@0.1.0"
+          objects:
+            - {object_id: "nova.mail.attention_item", name: "Attention item", description: "View over triaged message copies", operations: ["read"], scope_rules: ["owner's tenant only", "at most 50 groups"], schema_ref: "schema://nova/dismiss-an-attention-item/attention-item@0.1.0"}
+          variants:
+            - {variant_id: "by-id", description: "Explicit item IDs from an owner click; selected when IDs are given", compatible_environments: [], input_schema_ref: "schema://nova/dismiss-an-attention-item/dismiss-request@0.1.0", output_schema_ref: "schema://nova/dismiss-an-attention-item/resolved-items@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+            - {variant_id: "by-selector", description: "Selector from a chat request; always followed by owner confirmation", compatible_environments: [], input_schema_ref: "schema://nova/dismiss-an-attention-item/dismiss-request@0.1.0", output_schema_ref: "schema://nova/dismiss-an-attention-item/resolved-items@0.1.0", constraints: ["read-only", "never wider than the attention list", "confirmation required before apply"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:attention:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["not_found", "foreign_id", "too_many_matches"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every group in the tenant", "at most 50 groups"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.mail.attention.dismiss"
+          name: "Dismiss"
+          description: "Set attention_dismissed_at and attention_dismissed_by on every copy of each Message-ID where empty."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/attention-dismiss", operation: "dismiss"}
+          input_schema_ref: "schema://nova/dismiss-an-attention-item/flag-change@0.1.0"
+          output_schema_ref: "schema://nova/dismiss-an-attention-item/dismiss-result@0.1.0"
+          objects:
+            - {object_id: "nova.mail.attention_item", name: "Attention item", description: "Dismiss fields on message copies", operations: ["update"], scope_rules: ["attention_dismissed_at and attention_dismissed_by only", "same tenant only"], schema_ref: "schema://nova/dismiss-an-attention-item/flag-change@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/dismiss-an-attention-item/flag-change@0.1.0", output_schema_ref: "schema://nova/dismiss-an-attention-item/dismiss-result@0.1.0", constraints: ["single transaction", "no-op when already dismissed"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:attention:dismiss"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["items leave the attention list and the digest"], idempotency: "required", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["state_conflict", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["groups_changed plus already_in_state equals resolved groups", "triage hash unchanged"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.mail.attention.undismiss"
+          name: "Undismiss"
+          description: "Clear the dismiss fields on every copy of each Message-ID."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/attention-undismiss", operation: "undismiss"}
+          input_schema_ref: "schema://nova/dismiss-an-attention-item/flag-change@0.1.0"
+          output_schema_ref: "schema://nova/dismiss-an-attention-item/dismiss-result@0.1.0"
+          objects:
+            - {object_id: "nova.mail.attention_item", name: "Attention item", description: "Dismiss fields on message copies", operations: ["update"], scope_rules: ["attention_dismissed_at and attention_dismissed_by only", "same tenant only"], schema_ref: "schema://nova/dismiss-an-attention-item/flag-change@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/dismiss-an-attention-item/flag-change@0.1.0", output_schema_ref: "schema://nova/dismiss-an-attention-item/dismiss-result@0.1.0", constraints: ["single transaction", "no-op when not dismissed"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:attention:dismiss"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["items return to the attention list when still in the window"], idempotency: "required", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["state_conflict", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["flag cleared on every copy", "triage hash unchanged"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.mail.attention.list"
+          name: "Attention list"
+          description: "Return the current attention list through the same view the digest uses."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mail/attention-list", operation: "list"}
+          input_schema_ref: "schema://nova/dismiss-an-attention-item/attention-query@0.1.0"
+          output_schema_ref: "schema://nova/dismiss-an-attention-item/attention-item@0.1.0"
+          objects:
+            - {object_id: "nova.mail.attention_item", name: "Attention item", description: "View over triaged message copies", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/dismiss-an-attention-item/attention-item@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/dismiss-an-attention-item/attention-query@0.1.0", output_schema_ref: "schema://nova/dismiss-an-attention-item/attention-item@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:attention:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["dismissed items absent unless include_dismissed is set"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.activity.log"
+      name: "Activity log"
+      description: "Append-only audit of owner and agent actions."
+      intent_examples: ["what did I dismiss yesterday"]
+      input_schema_ref: "schema://nova/dismiss-an-attention-item/audit-entry@0.1.0"
+      output_schema_ref: "schema://nova/dismiss-an-attention-item/audit-receipt@0.1.0"
+      risk_class: "low"
+      preconditions: []
+      postconditions: ["entry readable by reference"]
+      tools:
+        - tool_id: "nova.activity.log.append"
+          name: "Append audit entry"
+          description: "Record kind, actor, origin, target Message-IDs and reason."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/activity/append", operation: "append"}
+          input_schema_ref: "schema://nova/dismiss-an-attention-item/audit-entry@0.1.0"
+          output_schema_ref: "schema://nova/dismiss-an-attention-item/audit-receipt@0.1.0"
+          objects:
+            - {object_id: "nova.activity.entry", name: "Audit entry", description: "One recorded action", operations: ["create"], scope_rules: ["owner's tenant only", "append-only"], schema_ref: "schema://nova/dismiss-an-attention-item/audit-entry@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/dismiss-an-attention-item/audit-entry@0.1.0", output_schema_ref: "schema://nova/dismiss-an-attention-item/audit-receipt@0.1.0", constraints: ["keys only, no subjects"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["activity:append"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["audit entry created"], idempotency: "required", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["entry readable by reference"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

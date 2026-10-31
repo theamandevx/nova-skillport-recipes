@@ -1,0 +1,221 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.ops"
+    name: "Nova — Operations"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Daily executive brief and weekly business pulse from the user's own sources, every line sourced and time-stamped, quiet when nothing is material."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "At least one connected read-only source adapter (calendar, triaged mail, payment schedule, pipeline, activity log, external-project snapshots)"
+        - "Scheduler running in the owner's time zone"
+        - "Owner notification channel"
+        - "Optional LLM provider with recorded data-transfer consent (headline only)"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.brief.sources"
+      name: "Brief source sections"
+      description: "Read one bounded, time-stamped summary section from each enabled source."
+      intent_examples: ["what's on today", "send me today's brief"]
+      input_schema_ref: "schema://nova/executive-brief-business-pulse/source-query@0.1.0"
+      output_schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0"
+      risk_class: "medium"
+      preconditions: ["source enabled by the owner and connected"]
+      postconditions: ["every section carries status and as_of"]
+      tools:
+        - tool_id: "nova.brief.sources.meetings"
+          name: "Today's meetings"
+          description: "Meetings and busy blocks in the window: time, title, external flag."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/brief/meetings", operation: "meetings"}
+          input_schema_ref: "schema://nova/executive-brief-business-pulse/source-query@0.1.0"
+          output_schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.event_summary", name: "Meeting summary", description: "A meeting's time, title and external flag", operations: ["read"], scope_rules: ["owner's calendars only", "no attendee emails"], schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/executive-brief-business-pulse/source-query@0.1.0", output_schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0", constraints: ["read-only", "no substitute source"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 2, rate_limits: [], error_codes: ["unavailable", "not_configured"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["as_of present", "times in owner time zone"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.brief.sources.attention_mail"
+          name: "Mail needing the user"
+          description: "Items triaged as needing a reply: sender display name and subject truncated to 80 characters; never bodies."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/brief/attention-mail", operation: "attention_mail"}
+          input_schema_ref: "schema://nova/executive-brief-business-pulse/source-query@0.1.0"
+          output_schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0"
+          objects:
+            - {object_id: "nova.mail.attention_item", name: "Attention item", description: "A triaged message that needs the owner", operations: ["read"], scope_rules: ["owner's mailboxes only", "metadata only, no bodies"], schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/executive-brief-business-pulse/source-query@0.1.0", output_schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0", constraints: ["read-only", "subject at most 80 characters"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mail:triage:read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 2, rate_limits: [], error_codes: ["unavailable", "not_configured"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no body text present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.brief.sources.money"
+          name: "Payments due"
+          description: "Payments due within due_within_days or overdue, and items awaiting review; account numbers masked to the last four."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/brief/money", operation: "money"}
+          input_schema_ref: "schema://nova/executive-brief-business-pulse/source-query@0.1.0"
+          output_schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0"
+          objects:
+            - {object_id: "nova.finance.payment_due", name: "Payment due", description: "A scheduled obligation with payee, amount, currency and due date", operations: ["read"], scope_rules: ["owner's schedule only", "masked account numbers"], schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/executive-brief-business-pulse/source-query@0.1.0", output_schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0", constraints: ["read-only", "per-currency totals, never converted"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["payments:schedule:read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 2, rate_limits: [], error_codes: ["unavailable", "not_configured"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no full account number present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.brief.sources.pipeline"
+          name: "Pipeline changes"
+          description: "New leads, stage changes and stalled-deal flags in the window."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/brief/pipeline", operation: "pipeline"}
+          input_schema_ref: "schema://nova/executive-brief-business-pulse/source-query@0.1.0"
+          output_schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0"
+          objects:
+            - {object_id: "nova.sales.pipeline_summary", name: "Pipeline summary", description: "Counts and top items from the owner's pipeline", operations: ["read"], scope_rules: ["owner's pipeline only"], schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/executive-brief-business-pulse/source-query@0.1.0", output_schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["pipeline:read"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 2, rate_limits: [], error_codes: ["unavailable", "not_configured"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["as_of present"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.brief.sources.activity"
+          name: "Assistant activity"
+          description: "Counts of assistant actions by source and any failures in the window, from the activity log."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/brief/activity", operation: "activity"}
+          input_schema_ref: "schema://nova/executive-brief-business-pulse/source-query@0.1.0"
+          output_schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0"
+          objects:
+            - {object_id: "nova.ops.activity_summary", name: "Activity summary", description: "Counts and failures from the append-only activity log", operations: ["read"], scope_rules: ["owner's tenant only"], schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/executive-brief-business-pulse/source-query@0.1.0", output_schema_ref: "schema://nova/executive-brief-business-pulse/source-section@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["activity:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 2, rate_limits: [], error_codes: ["unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["failures counted, not hidden"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.brief.sources.project_watch"
+          name: "External project snapshot pair"
+          description: "Latest external-project snapshot and the one nearest to 7 days earlier within plus or minus 24 hours."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/brief/project-watch", operation: "project_watch"}
+          input_schema_ref: "schema://nova/executive-brief-business-pulse/source-query@0.1.0"
+          output_schema_ref: "schema://nova/executive-brief-business-pulse/snapshot-pair@0.1.0"
+          objects:
+            - {object_id: "nova.watch.snapshot", name: "Snapshot", description: "Aggregate external-project rollup", operations: ["read"], scope_rules: ["owner's feeds only"], schema_ref: "schema://nova/executive-brief-business-pulse/snapshot-pair@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/executive-brief-business-pulse/source-query@0.1.0", output_schema_ref: "schema://nova/executive-brief-business-pulse/snapshot-pair@0.1.0", constraints: ["read-only", "prior null when none within window"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["watch:snapshots:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 20, max_attempts: 2, rate_limits: [], error_codes: ["unavailable", "no_prior"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["gap_hours between 144 and 192 when prior set"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.brief.compose"
+      name: "Brief composition"
+      description: "Decide materiality and render an exact, sourced message."
+      intent_examples: []
+      input_schema_ref: "schema://nova/executive-brief-business-pulse/facts@0.1.0"
+      output_schema_ref: "schema://nova/executive-brief-business-pulse/brief@0.1.0"
+      risk_class: "low"
+      preconditions: ["facts assembled and freshness-labelled"]
+      postconditions: ["every number appears in the facts"]
+      tools:
+        - tool_id: "nova.brief.compose.assess"
+          name: "Assess materiality"
+          description: "Pure rules: returns material plus the reasons and watch flags."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/brief/assess", operation: "assess"}
+          input_schema_ref: "schema://nova/executive-brief-business-pulse/facts@0.1.0"
+          output_schema_ref: "schema://nova/executive-brief-business-pulse/materiality@0.1.0"
+          objects:
+            - {object_id: "nova.brief.facts", name: "Facts", description: "Assembled source sections for one period", operations: ["read"], scope_rules: ["current run only"], schema_ref: "schema://nova/executive-brief-business-pulse/facts@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/executive-brief-business-pulse/facts@0.1.0", output_schema_ref: "schema://nova/executive-brief-business-pulse/materiality@0.1.0", constraints: ["deterministic"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["brief:runs:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 1, max_attempts: 1, rate_limits: [], error_codes: []}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["each reason maps to a section metric"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.brief.compose.render"
+          name: "Render brief"
+          description: "Template body with source and as-of per section; optional LLM headline verified against facts."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/brief/render", operation: "render"}
+          input_schema_ref: "schema://nova/executive-brief-business-pulse/facts@0.1.0"
+          output_schema_ref: "schema://nova/executive-brief-business-pulse/brief@0.1.0"
+          objects:
+            - {object_id: "nova.brief.brief", name: "Brief", description: "The rendered message for one period", operations: ["create"], scope_rules: ["owner only"], schema_ref: "schema://nova/executive-brief-business-pulse/brief@0.1.0"}
+          variants:
+            - {variant_id: "deterministic", description: "Default and the only pulse variant: fixed template, numbers copied from facts, no external transfer", compatible_environments: [], input_schema_ref: "schema://nova/executive-brief-business-pulse/facts@0.1.0", output_schema_ref: "schema://nova/executive-brief-business-pulse/brief@0.1.0", constraints: ["every number string-matches a fact", "deltas recompute"], fallback_variant_id: null}
+            - {variant_id: "llm-headline", description: "Brief only, opt-in: LLM writes at most two sentences from the facts JSON after the deterministic body exists", compatible_environments: ["LLM provider with recorded transfer consent"], input_schema_ref: "schema://nova/executive-brief-business-pulse/facts@0.1.0", output_schema_ref: "schema://nova/executive-brief-business-pulse/brief@0.1.0", constraints: ["numbers and names must appear in facts", "at most 2,000 input and 100 output tokens"], fallback_variant_id: "deterministic"}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["brief:runs:write", "llm:invoke (llm-headline only)"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["facts sent to the LLM provider (llm-headline only)"], idempotency: "not_applicable", timeout_seconds: 15, max_attempts: 2, rate_limits: [], error_codes: ["number_mismatch", "llm_unavailable", "over_budget"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["number-to-fact map complete", "every section shows source and as_of"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.brief.runs"
+      name: "Brief run ledger"
+      description: "At most one delivered brief per period key, with the outcome recorded."
+      intent_examples: []
+      input_schema_ref: "schema://nova/executive-brief-business-pulse/request@0.1.0"
+      output_schema_ref: "schema://nova/executive-brief-business-pulse/brief-run@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner time zone known"]
+      postconditions: ["claim reaches delivered, skipped or failed"]
+      tools:
+        - tool_id: "nova.brief.runs.claim"
+          name: "Claim period"
+          description: "Insert a unique claim for brief:YYYY-MM-DD or pulse:YYYY-Www; refuse if delivered or skipped."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/brief/runs", operation: "claim"}
+          input_schema_ref: "schema://nova/executive-brief-business-pulse/request@0.1.0"
+          output_schema_ref: "schema://nova/executive-brief-business-pulse/brief-run@0.1.0"
+          objects:
+            - {object_id: "nova.brief.run", name: "Brief run", description: "One period's claim and outcome", operations: ["create"], scope_rules: ["owner's tenant only", "unique period_key"], schema_ref: "schema://nova/executive-brief-business-pulse/brief-run@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/executive-brief-business-pulse/request@0.1.0", output_schema_ref: "schema://nova/executive-brief-business-pulse/brief-run@0.1.0", constraints: ["failed claims may be re-claimed"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["brief:runs:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["claim row created"], idempotency: "required", timeout_seconds: 5, max_attempts: 2, rate_limits: [], error_codes: ["already_delivered"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["unique key read-back"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.brief.runs.complete"
+          name: "Complete run"
+          description: "Record delivered, skipped or failed with the message ID and section statuses."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/brief/runs", operation: "complete"}
+          input_schema_ref: "schema://nova/executive-brief-business-pulse/brief-run@0.1.0"
+          output_schema_ref: "schema://nova/executive-brief-business-pulse/brief-run@0.1.0"
+          objects:
+            - {object_id: "nova.brief.run", name: "Brief run", description: "One period's claim and outcome", operations: ["update"], scope_rules: ["own claim only", "state, completed_at and message_id only"], schema_ref: "schema://nova/executive-brief-business-pulse/brief-run@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/executive-brief-business-pulse/brief-run@0.1.0", output_schema_ref: "schema://nova/executive-brief-business-pulse/brief-run@0.1.0", constraints: [], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["brief:runs:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["claim row updated"], idempotency: "required", timeout_seconds: 5, max_attempts: 3, rate_limits: [], error_codes: ["not_owner"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["final state read-back"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the owner's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/executive-brief-business-pulse/brief@0.1.0"
+      output_schema_ref: "schema://nova/executive-brief-business-pulse/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the brief or pulse as plain text to the owner only; idempotency key is the period key."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/executive-brief-business-pulse/brief@0.1.0"
+          output_schema_ref: "schema://nova/executive-brief-business-pulse/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the owner", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/executive-brief-business-pulse/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/executive-brief-business-pulse/brief@0.1.0", output_schema_ref: "schema://nova/executive-brief-business-pulse/delivery@0.1.0", constraints: ["owner only", "one message per period key"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

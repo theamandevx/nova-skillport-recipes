@@ -1,0 +1,319 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.ops"
+    name: "Nova — Operations"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "Consistent encrypted backups with retention, off-site copy and restore drills; a gitleaks-gated one-way config mirror; weekly Trivy image scans; environment-only database credentials."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal"]
+    installation:
+      mode: "organization"
+      prerequisites:
+        - "Host scheduler and a backup directory on a separate disk or volume where possible"
+        - "SQLite online backup API for the assistant session store and the automation hub"
+        - "Authenticated public-key encryption tool; private key held off the host by the owner"
+        - "Optional S3-compatible storage with versioning or object lock and a write-only credential"
+        - "Private git repository with push protection, a repository-scoped deploy key, and gitleaks pre-commit and pre-push hooks"
+        - "Trivy with access to its vulnerability database; images pinned by digest"
+        - "Owner notification channel; optional jobs/health board"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.backup.snapshot"
+      name: "Consistent snapshots"
+      description: "Take point-in-time copies of declared items without copying live database files."
+      intent_examples: ["back up now"]
+      input_schema_ref: "schema://nova/backup-secret-scan-security-scan/backup-item@0.1.0"
+      output_schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0"
+      risk_class: "medium"
+      preconditions: ["preflight passed", "cold-stop only inside the approved window"]
+      postconditions: ["one snapshot per item in a 0700 temp directory"]
+      tools:
+        - tool_id: "nova.backup.snapshot.create"
+          name: "Create snapshot"
+          description: "Snapshot one item by kind: SQLite via the online backup API, files by copy, or cold-stop for cold_ok items."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/backup/snapshot", operation: "create"}
+          input_schema_ref: "schema://nova/backup-secret-scan-security-scan/backup-item@0.1.0"
+          output_schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0"
+          objects:
+            - {object_id: "nova.backup.item", name: "Backup item", description: "Operator-declared SQLite database or file set", operations: ["read"], scope_rules: ["declared items only", "read-only connections"], schema_ref: "schema://nova/backup-secret-scan-security-scan/backup-item@0.1.0"}
+          variants:
+            - {variant_id: "sqlite-online", description: "Default for SQLite: online backup API or VACUUM INTO through a read-only connection; consistent under WAL", compatible_environments: ["SQLite 3 with WAL or rollback journal"], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/backup-item@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0", constraints: ["never copy live db or wal files"], fallback_variant_id: "cold-stop"}
+            - {variant_id: "cold-stop", description: "Stop the service, copy, start, health check; cold_ok items only, inside the approved window, at most 2 minutes", compatible_environments: ["services with a health check"], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/backup-item@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0", constraints: ["cold_ok true", "approved window", "service restarted even on failure"], fallback_variant_id: null}
+            - {variant_id: "file-copy", description: "Plain files with include and exclude globs; never used for databases", compatible_environments: [], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/backup-item@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0", constraints: ["kind files only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["backup:read-sources", "service:restart (cold-stop only)"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["temporary snapshot created", "brief service stop (cold-stop only)"], idempotency: "required", timeout_seconds: 600, max_attempts: 2, rate_limits: ["one run at a time"], error_codes: ["item_unreachable", "outside_window", "service_unhealthy"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["snapshot non-empty", "service healthy after cold-stop"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.backup.verify"
+      name: "Snapshot integrity"
+      description: "Refuse to seal a broken copy."
+      intent_examples: []
+      input_schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0"
+      output_schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0"
+      risk_class: "low"
+      preconditions: ["snapshot exists"]
+      postconditions: ["integrity ok or item excluded"]
+      tools:
+        - tool_id: "nova.backup.verify.integrity"
+          name: "Verify integrity"
+          description: "PRAGMA integrity_check and key row counts for SQLite; entry count and size trend for file sets."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/backup/verify", operation: "integrity"}
+          input_schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0"
+          output_schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0"
+          objects:
+            - {object_id: "nova.backup.snapshot", name: "Snapshot", description: "Temporary point-in-time copy", operations: ["read"], scope_rules: ["current run only"], schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0", constraints: ["read-only", "size drop over 50 percent flagged"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["backup:read-sources"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 300, max_attempts: 1, rate_limits: [], error_codes: ["integrity_failed", "size_anomaly"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["integrity_check returns ok"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.backup.seal"
+      name: "Seal archive"
+      description: "Authenticated encryption to an off-host recipient key plus a SHA-256 manifest; no plaintext archive is ever written."
+      intent_examples: []
+      input_schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0"
+      output_schema_ref: "schema://nova/backup-secret-scan-security-scan/archive@0.1.0"
+      risk_class: "high"
+      preconditions: ["recipient public key present", "at least one verified snapshot"]
+      postconditions: ["archive encrypted", "temp snapshots deleted"]
+      tools:
+        - tool_id: "nova.backup.seal.encrypt"
+          name: "Encrypt archive"
+          description: "Stream tar into authenticated public-key encryption and write the checksum manifest."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/backup/seal", operation: "encrypt"}
+          input_schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0"
+          output_schema_ref: "schema://nova/backup-secret-scan-security-scan/archive@0.1.0"
+          objects:
+            - {object_id: "nova.backup.archive", name: "Sealed archive", description: "Encrypted archive with checksum manifest", operations: ["create"], scope_rules: ["owner's backup store", "private key never on the host"], schema_ref: "schema://nova/backup-secret-scan-security-scan/archive@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported (authenticated public-key encryption, for example age)", compatible_environments: [], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/snapshot@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/archive@0.1.0", constraints: ["never falls back to plaintext"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["backup:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["sealed archive written", "temp snapshots deleted"], idempotency: "required", timeout_seconds: 900, max_attempts: 2, rate_limits: [], error_codes: ["recipient_missing", "encryption_failed", "disk_full"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["format header present", "checksum recomputes", "no plaintext file in the store"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.backup.store"
+      name: "Archive storage"
+      description: "Keep sealed archives locally and, recommended, in write-only off-site storage."
+      intent_examples: []
+      input_schema_ref: "schema://nova/backup-secret-scan-security-scan/archive@0.1.0"
+      output_schema_ref: "schema://nova/backup-secret-scan-security-scan/offsite-result@0.1.0"
+      risk_class: "medium"
+      preconditions: ["archive sealed"]
+      postconditions: ["off-site state always reported: copied, not_configured or failed"]
+      tools:
+        - tool_id: "nova.backup.store.write_local"
+          name: "Write local archive"
+          description: "Place the sealed archive and manifest in the backup directory with mode 0600."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/backup/store-local", operation: "write_local"}
+          input_schema_ref: "schema://nova/backup-secret-scan-security-scan/archive@0.1.0"
+          output_schema_ref: "schema://nova/backup-secret-scan-security-scan/archive@0.1.0"
+          objects:
+            - {object_id: "nova.backup.archive", name: "Sealed archive", description: "Encrypted archive with checksum manifest", operations: ["create"], scope_rules: ["backup directory only", "keys stored elsewhere"], schema_ref: "schema://nova/backup-secret-scan-security-scan/archive@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/archive@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/archive@0.1.0", constraints: ["mode 0600"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["backup:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["archive stored locally"], idempotency: "required", timeout_seconds: 300, max_attempts: 2, rate_limits: [], error_codes: ["disk_full"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["checksum matches manifest"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.backup.store.copy_offsite"
+          name: "Copy off-site"
+          description: "Upload the archive with a credential that can write but not delete or overwrite."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/backup/store-offsite", operation: "copy_offsite"}
+          input_schema_ref: "schema://nova/backup-secret-scan-security-scan/archive@0.1.0"
+          output_schema_ref: "schema://nova/backup-secret-scan-security-scan/offsite-result@0.1.0"
+          objects:
+            - {object_id: "nova.backup.offsite_object", name: "Off-site object", description: "Immutable or versioned copy of one archive", operations: ["create"], scope_rules: ["configured bucket only", "no delete or overwrite"], schema_ref: "schema://nova/backup-secret-scan-security-scan/offsite-result@0.1.0"}
+          variants:
+            - {variant_id: "object-lock", description: "S3-compatible storage with versioning or object lock; recommended, optional", compatible_environments: ["S3-compatible API"], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/archive@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/offsite-result@0.1.0", constraints: ["write-only credential", "remote checksum checked before retry"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["backup:offsite:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["encrypted archive uploaded off-site"], idempotency: "required", timeout_seconds: 1200, max_attempts: 3, rate_limits: [], error_codes: ["not_configured", "upload_failed", "checksum_mismatch"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["remote checksum equals local"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.backup.retention"
+      name: "Archive retention"
+      description: "Daily, weekly and monthly tiers without ever losing the newest good archive or dropping below keep_min."
+      intent_examples: []
+      input_schema_ref: "schema://nova/backup-secret-scan-security-scan/backup-config@0.1.0"
+      output_schema_ref: "schema://nova/backup-secret-scan-security-scan/prune-plan@0.1.0"
+      risk_class: "medium"
+      preconditions: ["tonight's archive verified"]
+      postconditions: ["newest good and keep_min good archives remain"]
+      tools:
+        - tool_id: "nova.backup.retention.prune"
+          name: "Prune local archives"
+          description: "Compute and apply the prune plan for archives this recipe created; off-site copies are never touched."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/backup/prune", operation: "prune"}
+          input_schema_ref: "schema://nova/backup-secret-scan-security-scan/backup-config@0.1.0"
+          output_schema_ref: "schema://nova/backup-secret-scan-security-scan/prune-plan@0.1.0"
+          objects:
+            - {object_id: "nova.backup.archive", name: "Sealed archive", description: "Encrypted archive with checksum manifest", operations: ["delete"], scope_rules: ["local archives created by this recipe only", "newest good protected", "at least keep_min good kept"], schema_ref: "schema://nova/backup-secret-scan-security-scan/archive@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/backup-config@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/prune-plan@0.1.0", constraints: ["skip when tonight's archive failed", "skip when a protection would be violated"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["backup:prune"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["old local archives deleted"], idempotency: "required", timeout_seconds: 120, max_attempts: 1, rate_limits: ["once per night"], error_codes: ["protection_violation"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["remaining good archives at least keep_min"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.backup.drill"
+      name: "Restore drill"
+      description: "Human-assisted monthly restore into an isolated scratch environment."
+      intent_examples: ["run the restore drill"]
+      input_schema_ref: "schema://nova/backup-secret-scan-security-scan/drill-request@0.1.0"
+      output_schema_ref: "schema://nova/backup-secret-scan-security-scan/drill-report@0.1.0"
+      risk_class: "medium"
+      preconditions: ["operator supplies the private key in scratch only", "scratch has no path to production"]
+      postconditions: ["scratch and key copy destroyed"]
+      tools:
+        - tool_id: "nova.backup.drill.run"
+          name: "Run restore drill"
+          description: "Decrypt, checksum, integrity check, row counts, app boot with outbound actions disabled, then destroy scratch."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/backup/drill", operation: "run"}
+          input_schema_ref: "schema://nova/backup-secret-scan-security-scan/drill-request@0.1.0"
+          output_schema_ref: "schema://nova/backup-secret-scan-security-scan/drill-report@0.1.0"
+          objects:
+            - {object_id: "nova.backup.archive", name: "Sealed archive", description: "Encrypted archive with checksum manifest", operations: ["read", "update"], scope_rules: ["drilled_at field only on pass"], schema_ref: "schema://nova/backup-secret-scan-security-scan/archive@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported; human-assisted", compatible_environments: ["isolated scratch environment"], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/drill-request@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/drill-report@0.1.0", constraints: ["never restores into production"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["backup:drill"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["scratch environment created and destroyed"], idempotency: "required", timeout_seconds: 7200, max_attempts: 1, rate_limits: ["monthly"], error_codes: ["decrypt_failed", "checksum_mismatch", "integrity_failed", "boot_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["all selected checks pass"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.mirror.config"
+      name: "Config mirror"
+      description: "One-way nightly mirror of whitelisted configuration into a private repository; any detected secret blocks the push."
+      intent_examples: ["what changed in my config last week"]
+      input_schema_ref: "schema://nova/backup-secret-scan-security-scan/mirror-config@0.1.0"
+      output_schema_ref: "schema://nova/backup-secret-scan-security-scan/mirror-run@0.1.0"
+      risk_class: "high"
+      preconditions: ["whitelist and deny list approved", "gitleaks available", "deploy key scoped to one repository"]
+      postconditions: ["nothing pushed without a clean scan"]
+      tools:
+        - tool_id: "nova.mirror.config.collect"
+          name: "Collect mirror changes"
+          description: "Copy whitelisted paths, skip deny patterns, export workflows without credentials, regenerate a data-free schema snapshot, redact token shapes."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mirror/collect", operation: "collect"}
+          input_schema_ref: "schema://nova/backup-secret-scan-security-scan/mirror-config@0.1.0"
+          output_schema_ref: "schema://nova/backup-secret-scan-security-scan/mirror-run@0.1.0"
+          objects:
+            - {object_id: "nova.mirror.working_tree", name: "Mirror working tree", description: "Local clone of the private mirror repository", operations: ["update"], scope_rules: ["whitelisted paths only", "deny patterns excluded", "one way: never pulls into the live system"], schema_ref: "schema://nova/backup-secret-scan-security-scan/mirror-config@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/mirror-config@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/mirror-run@0.1.0", constraints: ["database credential via environment only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["backup:read-sources", "mirror:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["working tree updated"], idempotency: "required", timeout_seconds: 300, max_attempts: 2, rate_limits: [], error_codes: ["export_failed", "deny_pattern_excluded"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["changed paths within whitelist", "no password in any process argument"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.mirror.config.scan"
+          name: "Secret scan"
+          description: "gitleaks on the staged diff; the same scan runs in the pre-commit and pre-push hooks; findings carry rule, file and line only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mirror/scan", operation: "scan"}
+          input_schema_ref: "schema://nova/backup-secret-scan-security-scan/mirror-run@0.1.0"
+          output_schema_ref: "schema://nova/backup-secret-scan-security-scan/scan-result@0.1.0"
+          objects:
+            - {object_id: "nova.mirror.working_tree", name: "Mirror working tree", description: "Local clone of the private mirror repository", operations: ["read"], scope_rules: ["staged changes and outgoing commits"], schema_ref: "schema://nova/backup-secret-scan-security-scan/mirror-config@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["gitleaks available"], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/mirror-run@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/scan-result@0.1.0", constraints: ["scanner missing means blocked", "allowlist changes need owner approval"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mirror:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 120, max_attempts: 2, rate_limits: [], error_codes: ["secret_detected", "scanner_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["exit status and report agree", "no secret value in findings"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.mirror.config.commit_push"
+          name: "Commit and push"
+          description: "Commit only when something changed and the scan is clean; push fast-forward with the deploy key; never force-push."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/mirror/push", operation: "commit_push"}
+          input_schema_ref: "schema://nova/backup-secret-scan-security-scan/scan-result@0.1.0"
+          output_schema_ref: "schema://nova/backup-secret-scan-security-scan/mirror-run@0.1.0"
+          objects:
+            - {object_id: "nova.mirror.commit", name: "Mirror commit", description: "One commit in the private mirror repository", operations: ["create"], scope_rules: ["one repository", "fast-forward only", "no history rewrite"], schema_ref: "schema://nova/backup-secret-scan-security-scan/mirror-run@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["git remote with push protection"], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/scan-result@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/mirror-run@0.1.0", constraints: ["requires clean scan", "retry on transport errors only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["mirror:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["commit pushed to the private repository"], idempotency: "required", timeout_seconds: 60, max_attempts: 3, rate_limits: ["once per night"], error_codes: ["push_rejected", "push_protection_blocked", "transport_error"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["remote ref equals local commit"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.security.vuln_scan"
+      name: "Container vulnerability scan"
+      description: "Weekly Trivy scan of running images by digest; alert on any HIGH or CRITICAL; never report clean with a stale database."
+      intent_examples: ["any critical vulnerabilities in my containers"]
+      input_schema_ref: "schema://nova/backup-secret-scan-security-scan/backup-config@0.1.0"
+      output_schema_ref: "schema://nova/backup-secret-scan-security-scan/vuln-report@0.1.0"
+      risk_class: "low"
+      preconditions: ["vulnerability database updated within 48 hours"]
+      postconditions: ["every running image scanned or marked unknown"]
+      tools:
+        - tool_id: "nova.security.vuln_scan.scan_images"
+          name: "Scan images"
+          description: "Trivy per image digest, severity HIGH and CRITICAL, fixable counts and new-since-last-week; no automatic upgrade."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/security/trivy", operation: "scan_images"}
+          input_schema_ref: "schema://nova/backup-secret-scan-security-scan/backup-config@0.1.0"
+          output_schema_ref: "schema://nova/backup-secret-scan-security-scan/vuln-report@0.1.0"
+          objects:
+            - {object_id: "nova.security.container_image", name: "Container image", description: "An image of the running stack, identified by digest", operations: ["read"], scope_rules: ["this stack's images only"], schema_ref: "schema://nova/backup-secret-scan-security-scan/vuln-report@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["Trivy with database access"], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/backup-config@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/vuln-report@0.1.0", constraints: ["read-only", "unpinned images flagged"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["containers:inspect"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 1800, max_attempts: 2, rate_limits: ["weekly"], error_codes: ["db_stale", "image_scan_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["db_fresh true", "all running images scanned"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the owner's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/backup-secret-scan-security-scan/alert@0.1.0"
+      output_schema_ref: "schema://nova/backup-secret-scan-security-scan/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send failure, staleness, secret-finding (rule and path only), vulnerability or drill alerts to the owner."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/backup-secret-scan-security-scan/alert@0.1.0"
+          output_schema_ref: "schema://nova/backup-secret-scan-security-scan/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "An alert to the owner", operations: ["create"], scope_rules: ["owner channel only", "never contains secret values"], schema_ref: "schema://nova/backup-secret-scan-security-scan/alert@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/alert@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/delivery@0.1.0", constraints: ["owner only", "one alert per job, night and kind"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the owner"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.jobs.registry"
+      name: "Jobs and health board"
+      description: "Show backup, mirror, scan and drill health with last success separate from last run; stale reports render unknown."
+      intent_examples: ["are my backups working"]
+      input_schema_ref: "schema://nova/backup-secret-scan-security-scan/job-report@0.1.0"
+      output_schema_ref: "schema://nova/backup-secret-scan-security-scan/job-report@0.1.0"
+      risk_class: "low"
+      preconditions: ["board configured (optional dependency)"]
+      postconditions: ["rows carry the run time"]
+      tools:
+        - tool_id: "nova.jobs.registry.report"
+          name: "Report job rows"
+          description: "Upsert rows backup, mirror, vuln-scan and restore-drill."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/jobs/report", operation: "report"}
+          input_schema_ref: "schema://nova/backup-secret-scan-security-scan/job-report@0.1.0"
+          output_schema_ref: "schema://nova/backup-secret-scan-security-scan/job-report@0.1.0"
+          objects:
+            - {object_id: "nova.jobs.job_row", name: "Job row", description: "One job's row on the jobs board", operations: ["create", "update"], scope_rules: ["rows owned by this recipe only"], schema_ref: "schema://nova/backup-secret-scan-security-scan/job-report@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/backup-secret-scan-security-scan/job-report@0.1.0", output_schema_ref: "schema://nova/backup-secret-scan-security-scan/job-report@0.1.0", constraints: ["upsert by job_key"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["jobs:report"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["board rows updated"], idempotency: "required", timeout_seconds: 10, max_attempts: 2, rate_limits: [], error_codes: ["board_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["last_success separate from last run", "no success within stale_after_hours shows late"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}

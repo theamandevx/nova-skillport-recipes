@@ -1,0 +1,364 @@
+# DRAFT — conceptual authoring shape from Skill Port Recipe Standard v1 §2.6; pending validation against Skill Port's approved JSON Schema.
+manifest:
+  package:
+    app_id: "nova.calendar"
+    name: "Nova — Calendar and meetings"
+    version: "0.1.0"
+    owner: "TBD (publisher ID assigned at Skill Port verification)"
+    status: "draft"
+    description: "A clearly named bot joins one approved online meeting, announces recording, captures audio, then produces a transcript with speaker labels and grounded minutes; consent withdrawal discards everything."
+    compatibility:
+      recipe_contract: "1.x"
+      runtimes: ["TBD"]
+      protocols: ["internal", "MCP"]
+    installation:
+      mode: "user"
+      prerequisites:
+        - "Dedicated bot account per meeting platform, provisioned by the deployer and signed in once by hand"
+        - "Deployer review of each platform's terms on automated or business-function accounts"
+        - "Headless browser runtime with a virtual audio sink and an audio encoder"
+        - "Whisper-class speech-to-text (hosted or local); optional local diarization model"
+        - "Minutes capabilities from nova.calendar.meeting-minutes"
+        - "Private recording store with auth-gated playback and a retention policy"
+        - "Owner notification channel and calendar booking list"
+      health_check_ref: null
+
+  capabilities:
+    - capability_id: "nova.calendar.booking"
+      name: "Calendar bookings"
+      description: "Read upcoming bookings with video links and attendees, to confirm participation and feed auto-join."
+      intent_examples: ["join my 3 pm and take notes"]
+      input_schema_ref: "schema://nova/meeting-minutes/booking-ref@0.1.0"
+      output_schema_ref: "schema://nova/meeting-minutes/booking@0.1.0"
+      risk_class: "low"
+      preconditions: ["requesting user identified"]
+      postconditions: ["bookings returned only for the requesting tenant"]
+      tools:
+        - tool_id: "nova.calendar.booking.list"
+          name: "List bookings"
+          description: "Return one booking by reference or upcoming bookings in a window (MCP list_bookings / upcoming_bookings in the reference)."
+          invocation: {protocol: "MCP", binding_ref: "binding://nova/calendar/list-bookings", operation: "upcoming_bookings"}
+          input_schema_ref: "schema://nova/meeting-minutes/booking-ref@0.1.0"
+          output_schema_ref: "schema://nova/meeting-minutes/booking@0.1.0"
+          objects:
+            - {object_id: "nova.calendar.booking_record", name: "Booking", description: "A scheduled meeting the user organises or is invited to", operations: ["read"], scope_rules: ["requesting user's bookings only"], schema_ref: "schema://nova/meeting-minutes/booking@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/meeting-minutes/booking-ref@0.1.0", output_schema_ref: "schema://nova/meeting-minutes/booking@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["calendar:bookings:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found", "forbidden"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["booking tenant equals requesting tenant"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notetaker.schedule"
+      name: "Auto-join queue"
+      description: "Queue of opted-in meetings, claimed atomically when their start time arrives."
+      intent_examples: ["record all meetings I organise"]
+      input_schema_ref: "schema://nova/meeting-notetaker/schedule-entry@0.1.0"
+      output_schema_ref: "schema://nova/meeting-notetaker/schedule-entry@0.1.0"
+      risk_class: "medium"
+      preconditions: ["user opted the meeting in", "approval recorded"]
+      postconditions: ["one entry per calendar event ID", "each entry claimed at most once"]
+      tools:
+        - tool_id: "nova.notetaker.schedule.add"
+          name: "Add queue entry"
+          description: "Upsert one entry keyed by calendar event ID (full unique index on source_ref, not a partial one)."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notetaker/schedule-add", operation: "add"}
+          input_schema_ref: "schema://nova/meeting-notetaker/schedule-entry@0.1.0"
+          output_schema_ref: "schema://nova/meeting-notetaker/schedule-entry@0.1.0"
+          objects:
+            - {object_id: "nova.notetaker.schedule_entry", name: "Schedule entry", description: "An opted-in meeting waiting to be joined", operations: ["create", "update"], scope_rules: ["requesting user's tenant only", "start time and link updated by event ID"], schema_ref: "schema://nova/meeting-notetaker/schedule-entry@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/meeting-notetaker/schedule-entry@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/schedule-entry@0.1.0", constraints: ["approval_id required"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notetaker:schedule:write"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["queue entry created or updated"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["duplicate", "no_video_link", "not_participant"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["exactly one entry per calendar event ID"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.notetaker.schedule.claim_due"
+          name: "Claim due entries"
+          description: "Atomically move due entries from pending to claimed (row locking) so no entry is dispatched twice."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notetaker/schedule-claim", operation: "claim_due"}
+          input_schema_ref: "schema://nova/meeting-notetaker/claim-request@0.1.0"
+          output_schema_ref: "schema://nova/meeting-notetaker/schedule-entry@0.1.0"
+          objects:
+            - {object_id: "nova.notetaker.schedule_entry", name: "Schedule entry", description: "An opted-in meeting waiting to be joined", operations: ["update"], scope_rules: ["status field only"], schema_ref: "schema://nova/meeting-notetaker/schedule-entry@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported; run every minute by a scheduler", compatible_environments: [], input_schema_ref: "schema://nova/meeting-notetaker/claim-request@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/schedule-entry@0.1.0", constraints: ["atomic claim"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notetaker:schedule:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["entry status set to claimed"], idempotency: "required", timeout_seconds: 10, max_attempts: 1, rate_limits: ["once per minute"], error_codes: ["already_claimed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["concurrent claims return disjoint entries"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notetaker.bot"
+      name: "Meeting bot"
+      description: "Join one approved meeting as a clearly named participant, announce recording, capture audio, and leave on the stop rules."
+      intent_examples: ["join https://meet.example.com/abc-defg-hij and take notes"]
+      input_schema_ref: "schema://nova/meeting-notetaker/request@0.1.0"
+      output_schema_ref: "schema://nova/meeting-notetaker/bot-session@0.1.0"
+      risk_class: "high"
+      preconditions: ["S3 approval valid", "bot account signed in", "host allowlisted", "user is a participant"]
+      postconditions: ["session ended with leave_reason and audio_health"]
+      tools:
+        - tool_id: "nova.notetaker.bot.join"
+          name: "Join meeting"
+          description: "Dispatch the headless-browser bot: mute microphone and camera, set the display name, ask to join, wait for admission, post the announcement, then record from a virtual audio sink."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notetaker/join", operation: "join"}
+          input_schema_ref: "schema://nova/meeting-notetaker/request@0.1.0"
+          output_schema_ref: "schema://nova/meeting-notetaker/bot-session@0.1.0"
+          objects:
+            - {object_id: "nova.notetaker.bot_session", name: "Bot session", description: "One bot presence in one meeting", operations: ["create"], scope_rules: ["requesting user's tenant only", "one per meeting"], schema_ref: "schema://nova/meeting-notetaker/bot-session@0.1.0"}
+            - {object_id: "nova.notetaker.consent_record", name: "Consent record", description: "Basis, announcement and withdrawal for one session", operations: ["create"], scope_rules: ["linked session only"], schema_ref: "schema://nova/meeting-notetaker/consent-record@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Headless browser with a persistent signed-in profile of the dedicated bot account; only the default variant is supported; no fallback to a managed third-party bot", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/meeting-notetaker/request@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/bot-session@0.1.0", constraints: ["disclosure on by default", "no capture before admission", "max 10800 s", "never speaks or unmutes"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notetaker:join"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["bot visible to all participants", "chat announcement posted", "audio captured"], idempotency: "required", timeout_seconds: 30, max_attempts: 2, rate_limits: ["one bot per meeting"], error_codes: ["bot_account_missing", "signin_challenge", "admission_timeout", "platform_blocked", "announcement_failed", "removed_by_host", "audio_failure"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["live lists the session with the approved link", "announcement precedes capture", "audio health not silent"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.notetaker.bot.live"
+          name: "Live sessions"
+          description: "List the meetings the bot is in right now, with state and start time."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notetaker/live", operation: "live"}
+          input_schema_ref: "schema://nova/meeting-notetaker/session-ref@0.1.0"
+          output_schema_ref: "schema://nova/meeting-notetaker/bot-session@0.1.0"
+          objects:
+            - {object_id: "nova.notetaker.bot_session", name: "Bot session", description: "One bot presence in one meeting", operations: ["read"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/meeting-notetaker/bot-session@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/meeting-notetaker/session-ref@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/bot-session@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notetaker:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["service_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["only the requesting tenant's sessions returned"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.notetaker.bot.leave"
+          name: "Leave meeting"
+          description: "Make the bot leave now; reason user_leave keeps what was captured, consent_withdrawn triggers discard."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notetaker/leave", operation: "leave"}
+          input_schema_ref: "schema://nova/meeting-notetaker/leave-request@0.1.0"
+          output_schema_ref: "schema://nova/meeting-notetaker/bot-session@0.1.0"
+          objects:
+            - {object_id: "nova.notetaker.bot_session", name: "Bot session", description: "One bot presence in one meeting", operations: ["update"], scope_rules: ["state field only"], schema_ref: "schema://nova/meeting-notetaker/bot-session@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/meeting-notetaker/leave-request@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/bot-session@0.1.0", constraints: ["leave within 5 s"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notetaker:leave"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["bot leaves the meeting"], idempotency: "required", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_live"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["session state ended within 5 s"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.recordings.store"
+      name: "Private recording store"
+      description: "Store recordings privately with auth-gated playback; delete on consent withdrawal or retention expiry."
+      intent_examples: ["play the recording of the vendor sync"]
+      input_schema_ref: "schema://nova/meeting-notetaker/audio-ref@0.1.0"
+      output_schema_ref: "schema://nova/meeting-notetaker/recording@0.1.0"
+      risk_class: "high"
+      preconditions: ["consent not withdrawn", "audio health not silent"]
+      postconditions: ["no public URL exists"]
+      tools:
+        - tool_id: "nova.recordings.store.upload"
+          name: "Upload recording"
+          description: "Upload compressed mono audio to a private bucket; the local file is deleted only after the object is confirmed."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/recordings/upload", operation: "upload"}
+          input_schema_ref: "schema://nova/meeting-notetaker/audio-ref@0.1.0"
+          output_schema_ref: "schema://nova/meeting-notetaker/recording@0.1.0"
+          objects:
+            - {object_id: "nova.recordings.recording", name: "Recording", description: "Audio of one bot session", operations: ["create"], scope_rules: ["requesting user's tenant only", "private bucket", "playback through an auth-checked relay"], schema_ref: "schema://nova/meeting-notetaker/recording@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/meeting-notetaker/audio-ref@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/recording@0.1.0", constraints: ["private only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["recordings:write"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["recording object created"], idempotency: "required", timeout_seconds: 120, max_attempts: 4, rate_limits: [], error_codes: ["store_unavailable", "too_large"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["size and duration match", "anonymous read refused"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.recordings.store.delete"
+          name: "Delete recording"
+          description: "Delete the recording, local audio and partial transcript on consent withdrawal or retention expiry."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/recordings/delete", operation: "delete"}
+          input_schema_ref: "schema://nova/meeting-notetaker/session-ref@0.1.0"
+          output_schema_ref: "schema://nova/meeting-notetaker/recording@0.1.0"
+          objects:
+            - {object_id: "nova.recordings.recording", name: "Recording", description: "Audio of one bot session", operations: ["delete"], scope_rules: ["consent withdrawal or retention expiry only"], schema_ref: "schema://nova/meeting-notetaker/recording@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/meeting-notetaker/session-ref@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/recording@0.1.0", constraints: ["irreversible"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["recordings:delete"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["recording and local audio deleted"], idempotency: "required", timeout_seconds: 30, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["storage read returns not-found", "local file absent"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.transcribe.audio"
+      name: "Speech-to-text and speaker turns"
+      description: "Transcribe audio with timestamps and add ephemeral speaker labels."
+      intent_examples: []
+      input_schema_ref: "schema://nova/meeting-notetaker/audio-ref@0.1.0"
+      output_schema_ref: "schema://nova/meeting-notetaker/transcript-segment@0.1.0"
+      risk_class: "medium"
+      preconditions: ["audio available", "consent not withdrawn"]
+      postconditions: ["segments cover at least 95% of the audio timeline or gaps are marked"]
+      tools:
+        - tool_id: "nova.transcribe.audio.transcribe"
+          name: "Transcribe audio"
+          description: "Compress to mono; split into 15-minute chunks with offsets when over the provider upload limit; transcribe and merge."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/transcribe/stt", operation: "transcribe"}
+          input_schema_ref: "schema://nova/meeting-notetaker/audio-ref@0.1.0"
+          output_schema_ref: "schema://nova/meeting-notetaker/transcript-segment@0.1.0"
+          objects:
+            - {object_id: "nova.transcribe.transcript_segment", name: "Transcript segment", description: "Timed text of one stretch of audio", operations: ["create"], scope_rules: ["linked session only"], schema_ref: "schema://nova/meeting-notetaker/transcript-segment@0.1.0"}
+          variants:
+            - {variant_id: "whisper-hosted", description: "Hosted Whisper-class STT; selected first when external transfer is enabled; about USD 0.04 per audio hour in the reference", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/meeting-notetaker/audio-ref@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/transcript-segment@0.1.0", constraints: ["operator enabled external transfer", "chunks under the provider upload limit (about 25 MB)"], fallback_variant_id: "whisper-local"}
+            - {variant_id: "whisper-local", description: "Self-hosted Whisper-class STT; slower on CPU", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/meeting-notetaker/audio-ref@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/transcript-segment@0.1.0", constraints: ["never falls back to hosted automatically"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["transcribe:audio"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["audio sent to the hosted provider when whisper-hosted is used"], idempotency: "recommended", timeout_seconds: 300, max_attempts: 3, rate_limits: [], error_codes: ["provider_not_ready", "upload_too_large", "chunk_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["coverage at least 95%", "offsets monotonic"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.transcribe.audio.diarize"
+          name: "Diarize speakers"
+          description: "Ephemeral speaker turns; each segment takes the most-overlapping speaker; embeddings discarded; no voiceprints."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/transcribe/diarize", operation: "diarize"}
+          input_schema_ref: "schema://nova/meeting-notetaker/audio-ref@0.1.0"
+          output_schema_ref: "schema://nova/meeting-notetaker/transcript-segment@0.1.0"
+          objects:
+            - {object_id: "nova.transcribe.transcript_segment", name: "Transcript segment", description: "Timed text of one stretch of audio", operations: ["update"], scope_rules: ["speaker_label field only", "no cross-meeting speaker identity"], schema_ref: "schema://nova/meeting-notetaker/transcript-segment@0.1.0"}
+          variants:
+            - {variant_id: "local-model", description: "Local open-source diarization model; skipped above 45 minutes of audio on CPU", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/meeting-notetaker/audio-ref@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/transcript-segment@0.1.0", constraints: ["ephemeral", "no voiceprints"], fallback_variant_id: "none"}
+            - {variant_id: "channel-split", description: "Separate microphone and system tracks; not eligible here (one mixed stream); used by nova.calendar.desktop-meeting-recorder", compatible_environments: ["desktop recorder only"], input_schema_ref: "schema://nova/meeting-notetaker/audio-ref@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/transcript-segment@0.1.0", constraints: ["requires two tracks"], fallback_variant_id: null}
+            - {variant_id: "none", description: "Diarization skipped; minutes flagged speaker_unlabelled", compatible_environments: [], input_schema_ref: "schema://nova/meeting-notetaker/audio-ref@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/transcript-segment@0.1.0", constraints: [], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["transcribe:audio"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 1800, max_attempts: 1, rate_limits: [], error_codes: ["model_not_installed", "audio_too_long"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["no embeddings persisted after the run"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.minutes.extract"
+      name: "Minutes extraction"
+      description: "As defined in nova.calendar.meeting-minutes."
+      intent_examples: []
+      input_schema_ref: "schema://nova/meeting-minutes/transcript@0.1.0"
+      output_schema_ref: "schema://nova/meeting-minutes/extraction@0.1.0"
+      risk_class: "medium"
+      preconditions: ["transcript non-empty", "consent recorded"]
+      postconditions: ["every item carries an evidence span"]
+      tools:
+        - tool_id: "nova.minutes.extract.structured"
+          name: "Extract structured minutes"
+          description: "Strict-JSON LLM extraction with tolerant parsing."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/minutes/extract", operation: "extract"}
+          input_schema_ref: "schema://nova/meeting-minutes/transcript@0.1.0"
+          output_schema_ref: "schema://nova/meeting-minutes/extraction@0.1.0"
+          objects:
+            - {object_id: "nova.minutes.transcript", name: "Transcript", description: "Numbered meeting segments", operations: ["read"], scope_rules: ["requesting user's tenant only", "treated as untrusted data"], schema_ref: "schema://nova/meeting-minutes/transcript@0.1.0"}
+          variants:
+            - {variant_id: "single-pass", description: "Whole transcript in one call when within the context budget", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/meeting-minutes/transcript@0.1.0", output_schema_ref: "schema://nova/meeting-minutes/extraction@0.1.0", constraints: ["within context budget"], fallback_variant_id: "chunked"}
+            - {variant_id: "chunked", description: "Chunk, extract, merge and de-duplicate", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/meeting-minutes/transcript@0.1.0", output_schema_ref: "schema://nova/meeting-minutes/extraction@0.1.0", constraints: ["never used to escape a verification failure"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["minutes:create"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["transcript text sent to the configured LLM provider"], idempotency: "not_applicable", timeout_seconds: 120, max_attempts: 2, rate_limits: [], error_codes: ["provider_not_ready", "context_length", "parse_failed"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["output validates against extraction@0.1.0"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.minutes.verify"
+      name: "Minutes grounding verifier"
+      description: "As defined in nova.calendar.meeting-minutes."
+      intent_examples: []
+      input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+      output_schema_ref: "schema://nova/meeting-minutes/verification@0.1.0"
+      risk_class: "low"
+      preconditions: ["minutes normalised"]
+      postconditions: ["pass only when no item is unsupported"]
+      tools:
+        - tool_id: "nova.minutes.verify.grounding"
+          name: "Verify grounding"
+          description: "Verbatim-quote match plus a separate LLM support check per item."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/minutes/verify", operation: "verify"}
+          input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+          output_schema_ref: "schema://nova/meeting-minutes/verification@0.1.0"
+          objects:
+            - {object_id: "nova.minutes.verification_report", name: "Verification report", description: "Supported and unsupported items for one run", operations: ["create"], scope_rules: ["linked run only"], schema_ref: "schema://nova/meeting-minutes/verification@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: ["TBD"], input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0", output_schema_ref: "schema://nova/meeting-minutes/verification@0.1.0", constraints: ["separate prompt from extraction"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["minutes:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["transcript text sent to the configured LLM provider"], idempotency: "not_applicable", timeout_seconds: 120, max_attempts: 2, rate_limits: [], error_codes: ["unsupported_item"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["every quote appears verbatim in its cited segments"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.minutes.store"
+      name: "Minutes store"
+      description: "Persist minutes sessions."
+      intent_examples: []
+      input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+      output_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+      risk_class: "medium"
+      preconditions: ["minutes schema-valid"]
+      postconditions: ["exactly one session per idempotency key"]
+      tools:
+        - tool_id: "nova.minutes.store.create"
+          name: "Create minutes session"
+          description: "Create one session linked to the bot session, transcript and recording."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/minutes/store-create", operation: "create"}
+          input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+          output_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"
+          objects:
+            - {object_id: "nova.minutes.session", name: "Minutes session", description: "Stored minutes for one meeting", operations: ["create"], scope_rules: ["requesting user's tenant only"], schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0", output_schema_ref: "schema://nova/meeting-minutes/minutes@0.1.0", constraints: ["idempotency key required"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["minutes:create"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["minutes session created"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["duplicate", "store_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["read-back hash equals payload hash"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.approvals.gateway"
+      name: "Approval gateway"
+      description: "Record and check the user's per-meeting approval or auto-join opt-in."
+      intent_examples: []
+      input_schema_ref: "schema://nova/meeting-notetaker/approval@0.1.0"
+      output_schema_ref: "schema://nova/meeting-notetaker/approval@0.1.0"
+      risk_class: "medium"
+      preconditions: ["requesting user identified"]
+      postconditions: ["approval bound to one meeting or a stated standing scope"]
+      tools:
+        - tool_id: "nova.approvals.gateway.request"
+          name: "Request approval"
+          description: "Ask the user to approve one join (link, display name, disclosure, duration cap) or an opt-in."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/approvals/request", operation: "request"}
+          input_schema_ref: "schema://nova/meeting-notetaker/approval@0.1.0"
+          output_schema_ref: "schema://nova/meeting-notetaker/approval@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One user decision with scope hash", operations: ["create"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/meeting-notetaker/approval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/meeting-notetaker/approval@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/approval@0.1.0", constraints: ["expires after 10 minutes for on-demand joins"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notetaker:join"], consent_required: true, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["approval prompt shown to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 2, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["scope hash covers link, name, disclosure and cap"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+        - tool_id: "nova.approvals.gateway.status"
+          name: "Approval status"
+          description: "Return approved, declined, expired or revoked for one approval."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/approvals/status", operation: "status"}
+          input_schema_ref: "schema://nova/meeting-notetaker/approval@0.1.0"
+          output_schema_ref: "schema://nova/meeting-notetaker/approval@0.1.0"
+          objects:
+            - {object_id: "nova.approvals.approval", name: "Approval", description: "One user decision with scope hash", operations: ["read"], scope_rules: ["requesting user only"], schema_ref: "schema://nova/meeting-notetaker/approval@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/meeting-notetaker/approval@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/approval@0.1.0", constraints: ["read-only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notetaker:read"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: [], idempotency: "not_applicable", timeout_seconds: 10, max_attempts: 3, rate_limits: [], error_codes: ["not_found"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["revoked or expired approvals never pass"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
+
+    - capability_id: "nova.notify.owner"
+      name: "Owner notification"
+      description: "Deliver a message to the requesting user's own channel."
+      intent_examples: []
+      input_schema_ref: "schema://nova/meeting-notetaker/result@0.1.0"
+      output_schema_ref: "schema://nova/meeting-notetaker/delivery@0.1.0"
+      risk_class: "low"
+      preconditions: ["owner channel configured"]
+      postconditions: ["delivery receipt"]
+      tools:
+        - tool_id: "nova.notify.owner.send"
+          name: "Notify owner"
+          description: "Send the notetaker result, minutes summary and flags to the requesting user only."
+          invocation: {protocol: "internal", binding_ref: "binding://nova/notify/owner", operation: "send"}
+          input_schema_ref: "schema://nova/meeting-notetaker/result@0.1.0"
+          output_schema_ref: "schema://nova/meeting-notetaker/delivery@0.1.0"
+          objects:
+            - {object_id: "nova.notify.message", name: "Owner message", description: "A message to the requesting user", operations: ["create"], scope_rules: ["owner channel only"], schema_ref: "schema://nova/meeting-notetaker/delivery@0.1.0"}
+          variants:
+            - {variant_id: "default", description: "Only the default variant is supported", compatible_environments: [], input_schema_ref: "schema://nova/meeting-notetaker/result@0.1.0", output_schema_ref: "schema://nova/meeting-notetaker/delivery@0.1.0", constraints: ["owner only"], fallback_variant_id: null}
+          authorization: {required: true, identity_provider: "TBD", required_scopes: ["notify:owner"], consent_required: false, grant_ref: null, tenant_binding_required: true}
+          execution: {side_effects: ["message delivered to the user"], idempotency: "required", timeout_seconds: 15, max_attempts: 3, rate_limits: [], error_codes: ["channel_unavailable"]}
+          verification: {health_check_ref: null, test_refs: ["TBD"], success_assertions: ["delivery receipt received"]}
+          availability: {status: "unverified", last_verified_at: null, evidence_refs: []}
